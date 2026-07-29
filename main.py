@@ -11,6 +11,7 @@
 import os
 import sys
 import threading
+import ctypes
 
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -541,7 +542,81 @@ def _fatal_error(e):
         pass
 
 
+_SINGLE_INSTANCE_MUTEX = None
+_SINGLE_INSTANCE_NAME = "SWYS_VoiceControl_SingleInstance"
+
+
+def _acquire_single_instance():
+    """创建进程级互斥体，保证同时只有一个实例运行。
+
+    返回 True 表示本进程是首个实例（应正常启动）；
+    返回 False 表示已有实例在运行（调用方应唤醒旧实例并退出）。
+    非 Windows 平台直接返回 True（不做限制）。
+    """
+    global _SINGLE_INSTANCE_MUTEX
+    if not hasattr(ctypes, "windll"):
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.GetLastError.argtypes = []
+        kernel32.GetLastError.restype = ctypes.c_uint
+        mutex = kernel32.CreateMutexW(None, 0, _SINGLE_INSTANCE_NAME)
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        # 持有到进程退出：不关闭句柄，避免被垃圾回收提前释放
+        _SINGLE_INSTANCE_MUTEX = mutex
+        return True
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def wake_existing_instance():
+    """唤醒已在运行的实例，避免重复双击只多开窗口却看不到。
+
+    优先走本机 HTTP /api/wake（调用程序自身的 show_from_tray，能正确处理
+    收进托盘的隐藏窗口）；HTTP 未启用或不可达时，用 win32gui 把窗口置前。
+    返回是否成功发出唤醒信号。
+    """
+    # 1) 走本机 HTTP 服务（最可靠，能正确恢复托盘隐藏窗口）
+    try:
+        import urllib.request
+        port = 8765
+        try:
+            cfg = config_mod.load_config() or {}
+            hcfg = cfg.get("http_control", {}) or {}
+            port = int(hcfg.get("port", 8765))
+        except Exception:  # noqa: BLE001
+            pass
+        url = "http://127.0.0.1:%d/api/wake" % port
+        with urllib.request.urlopen(url, timeout=2.0) as _resp:
+            _resp.read()
+        return True
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) 兜底：用 win32gui 把已有窗口置前（处理 HTTP 未启用的情况）
+    try:
+        import win32gui
+        import win32con
+        hwnd = win32gui.FindWindow(None, APP_TITLE)
+        if hwnd:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def main():
+    # 单实例保护：已有实例运行时，唤醒旧窗口/托盘就退出，不创建新窗口
+    if not _acquire_single_instance():
+        try:
+            wake_existing_instance()
+        except Exception:  # noqa: BLE001
+            pass
+        return
     try:
         _run_main()
     except Exception as e:  # noqa: BLE001

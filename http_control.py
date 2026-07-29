@@ -86,6 +86,17 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 app = getattr(self.server, "app", None)
                 log = app.get_recent_log() if app else []
                 self._send_json({"ok": True, "log": log})
+            elif path == "/api/wake":
+                # 单实例唤醒：把已运行实例的窗口显示并置前（跨线程须回主线程调度）
+                app = getattr(self.server, "app", None)
+                if app is None:
+                    self._send_json({"ok": False, "error": "server not ready"}, 503)
+                    return
+                try:
+                    app.root.after(0, app.show_from_tray)
+                    self._send_json({"ok": True, "woke": True})
+                except Exception as e:  # noqa: BLE001
+                    self._send_json({"ok": False, "error": str(e)}, 500)
             else:
                 self._send_json({"ok": False, "error": "not found", "path": path}, 404)
         except Exception as e:  # noqa: BLE001
