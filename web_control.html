@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>局域网控制台 · 文本控制 Windows</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Microsoft YaHei", system-ui, sans-serif;
+         background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 18px 16px 40px; }
+  h1 { font-size: 20px; margin: 6px 0 2px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; }
+  #base { flex: 1; background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
+          border-radius: 8px; padding: 9px 10px; font-size: 13px; }
+  #cmd { flex: 1; background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
+         border-radius: 8px; padding: 11px 12px; font-size: 15px; }
+  button { cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px;
+           font-size: 14px; background: #3b82f6; color: #fff; }
+  button:hover { background: #2563eb; }
+  button.ghost { background: #334155; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
+  .chip { background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
+          border-radius: 999px; padding: 7px 13px; font-size: 13px; cursor: pointer; }
+  .chip:hover { background: #334155; color: #fff; }
+  .panel { background: #111827; border: 1px solid #1f2937; border-radius: 10px;
+           padding: 12px; height: 46vh; overflow: auto; font-size: 13.5px; line-height: 1.7; }
+  .panel .u { color: #60a5fa; }
+  .panel .b { color: #34d399; }
+  .panel .l { color: #9ca3af; }
+  .panel .e { color: #f87171; }
+  .status { font-size: 12px; color: #64748b; margin-top: 10px; }
+  .ok { color: #34d399; }
+  .api { background: #111827; border: 1px solid #1f2937; border-radius: 10px;
+         padding: 10px 14px; margin: 8px 0 14px; }
+  .api summary { cursor: pointer; font-size: 14px; color: #cbd5e1; outline: none; }
+  .api-hint { color: #94a3b8; font-size: 12.5px; margin: 8px 0; line-height: 1.7; }
+  .api-hint code { background: #1e293b; padding: 1px 5px; border-radius: 4px; color: #e2e8f0; }
+  .codecap { color: #64748b; font-size: 12px; margin: 8px 0 4px; }
+  .code { background: #0b1220; border: 1px solid #1f2937; border-radius: 8px; padding: 10px;
+          font-size: 12.5px; color: #cbd5e1; white-space: pre-wrap; word-break: break-all;
+          margin: 0 0 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🌐 局域网控制台</h1>
+  <div class="sub">向本机「语音控制台」发送文字指令，远程控制这台 Windows 电脑。</div>
+
+  <div class="row">
+    <input id="base" placeholder="服务器地址，如 http://192.168.1.20:8765">
+    <button class="ghost" onclick="applyBase()">应用地址</button>
+  </div>
+
+  <div class="row">
+    <input id="cmd" placeholder="输入指令，如：双击编辑 / 回收站 / 编辑 / 截图" onkeydown="if(event.key==='Enter')send()">
+    <button onclick="send()">发送</button>
+  </div>
+
+  <details class="api" open>
+    <summary>🔌 HTTP 接口调用方式（可集成到脚本 / 其它程序）</summary>
+    <p class="api-hint">服务器地址：<code id="apiBase">（自动检测）</code><br>
+    把下面任意一段里的地址换成你的服务器地址即可，示例已自动填入。</p>
+    <div class="codecap">① 发送指令（POST JSON）</div>
+    <pre class="code" data-tpl='curl -X POST BASE/api/command -H "Content-Type: application/json" -d "{\"text\":\"双击编辑\"}"'></pre>
+    <div class="codecap">② 发送指令（GET，更简短）</div>
+    <pre class="code" data-tpl='curl "BASE/api/command?text=回收站"'></pre>
+    <div class="codecap">③ Python 调用</div>
+    <pre class="code" data-tpl='import requests; requests.post("BASE/api/command", json={"text":"编辑"})'></pre>
+    <p class="api-hint">其它接口：<code>GET /api/log</code> 轮询最近执行结果 ·
+    <code>GET /api/status</code> 健康检查 · <code>GET /</code> 本控制页。<br>
+    说明：关机/重启/睡眠等危险操作默认被拦截，需在 config.json 将
+    <code>http_control.allow_destructive</code> 设为 true 才允许通过局域网触发。</p>
+  </details>
+
+  <div class="chips" id="chips"></div>
+
+  <div class="panel" id="log"></div>
+  <div class="status" id="status">就绪</div>
+</div>
+
+<script>
+  // 若由本服务托管（http/https 协议），默认地址就是当前站点；否则留空让用户填。
+  var BASE = (location.protocol === "http:" || location.protocol === "https:")
+             ? location.origin : "";
+  if (BASE) document.getElementById("base").value = BASE;
+
+  var QUICK = ["编辑","保存","复制","粘贴","撤销","双击编辑","右键发送",
+               "回收站","截图","锁屏","最小化窗口","关闭当前窗口","打开记事本","帮助"];
+
+  var chipsEl = document.getElementById("chips");
+  QUICK.forEach(function (q) {
+    var b = document.createElement("span");
+    b.className = "chip"; b.textContent = q;
+    b.onclick = function () { document.getElementById("cmd").value = q; send(); };
+    chipsEl.appendChild(b);
+  });
+
+  function applyBase() {
+    var v = document.getElementById("base").value.trim().replace(/\/+$/, "");
+    BASE = v || BASE;
+    status("已设置服务器地址：" + (BASE || "(未设置)"));
+    fillExamples();
+    poll();
+  }
+
+  function status(msg, ok) {
+    var el = document.getElementById("status");
+    el.textContent = msg;
+    el.className = "status" + (ok ? " ok" : "");
+  }
+
+  // 把真实服务器地址填进“HTTP 接口调用方式”里的示例代码
+  function fillExamples() {
+    var origin = BASE || "http://127.0.0.1:8765";
+    var ab = document.getElementById("apiBase");
+    if (ab) ab.textContent = origin;
+    var blocks = document.querySelectorAll(".code[data-tpl]");
+    for (var i = 0; i < blocks.length; i++) {
+      blocks[i].textContent = blocks[i].getAttribute("data-tpl").replace(/BASE/g, origin);
+    }
+  }
+
+  function post(text) {
+    if (!BASE) { status("请先填写服务器地址（本机可填 http://127.0.0.1:8765）"); return; }
+    fetch(BASE + "/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.ok) status("已发送：" + text, true);
+      else status("发送失败：" + (j.error || "未知错误"));
+    }).catch(function (e) {
+      status("无法连接服务器：" + e + "（检查地址/端口/防火墙）");
+    });
+  }
+
+  function send() {
+    var el = document.getElementById("cmd");
+    var t = el.value.trim();
+    if (!t) return;
+    post(t);
+    el.value = "";
+  }
+
+  function poll() {
+    if (!BASE) return;
+    fetch(BASE + "/api/log").then(function (r) { return r.json(); }).then(function (j) {
+      if (!j.ok) return;
+      var box = document.getElementById("log");
+      box.innerHTML = j.log.map(function (line) {
+        var cls = "l";
+        if (line.indexOf("你：") === 0) cls = "u";
+        else if (line.indexOf("助手：") === 0) cls = "b";
+        else if (line.indexOf("⚠") === 0) cls = "e";
+        return '<div class="' + cls + '">' + escapeHtml(line) + "</div>";
+      }).join("");
+      box.scrollTop = box.scrollHeight;
+    }).catch(function () {});
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+    });
+  }
+
+  // 初次拉取 + 定时刷新
+  fillExamples();
+  poll();
+  setInterval(poll, 1500);
+</script>
+</body>
+</html>

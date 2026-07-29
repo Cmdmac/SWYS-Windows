@@ -1,0 +1,32 @@
+# 语音控制台 · 运行依赖
+# 安装：pip install -r requirements.txt
+#
+# 说明：本程序已内置 winctl 兜底（ctypes + Pillow），
+# 因此【不再强制依赖 pyautogui】，普通 pip 即可一次装好，无需编译、无需管理员。
+
+# 必装（均为纯 Python / 有预编译 wheel，pip 直接装）
+pyttsx3>=2.90          # 语音播报
+pyperclip>=1.8.2       # 剪贴板输入
+requests>=2.31.0       # 大模型 API
+Pillow>=10.0.0         # 截图兜底（winctl 用 ImageGrab）
+uiautomation>=2.0.10   # 按控件名点击（可见可说核心）
+pytesseract>=0.3.10    # OCR 按屏幕文字点击（需另装 Tesseract 引擎，见下）
+pystray>=0.19.0        # 系统托盘图标（Windows 上自动依赖 pywin32，纯 wheel 安装）
+
+# ---- 可选：麦克风语音输入（🎤）----
+# pyaudio 仅用于麦克风采集。未安装时程序自动降级（🎤 提示不可用），不影响其它功能。
+# 注意：Python 3.12+ 常无预编译 wheel，pip 会本地编译并报
+#   “Microsoft Visual C++ 14.0 or greater is required”。解决：
+#   1) 装编译工具 https://visualstudio.microsoft.com/visual-cpp-build-tools/ 后 pip install pyaudio
+#   2) 或 pip install pipwin && pipwin install pyaudio（推荐，省去编译）
+# pyaudio>=0.2.13
+
+# ---- 可选：pyautogui（若你希望用它而非内置 ctypes 兜底）----
+# 不装也完全可用；装了则 winctl 自动优先使用，行为一致。
+# pip install pyautogui
+
+# ============ OCR 还需要 Tesseract 引擎本体（不是 pip 包）============
+# pytesseract 只是个壳，真正识别靠 tesseract.exe：
+#   - 运行本目录 install_tesseract.bat（右键“以管理员身份运行”）
+#   - 或在 config.json 里加："tesseract_path": "C:/path/to/tesseract.exe"
+#   - 中文需中文语言包 chi_sim（install_tesseract.bat 已附带）

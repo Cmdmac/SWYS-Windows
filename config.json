@@ -1,0 +1,19 @@
+{
+  "endpoint": "https://api.openai.com/v1",
+  "api_key": "",
+  "model": "gpt-4o-mini",
+  "auto_speak": false,
+  "speech_rate": 170,
+  "language": "zh-CN",
+  "confirm_destructive": true,
+  "tesseract_path": "C:\\Users\\cmdma\\WorkBuddy\\2026-07-27-17-49-13\\voice_control\\tesseract_portable\\tesseract.exe",
+  "http_control": {
+    "enabled": true,
+    "port": 8765,
+    "allow_destructive": false
+  },
+  "tray": {
+    "enabled": true,
+    "start_minimized": false
+  }
+}

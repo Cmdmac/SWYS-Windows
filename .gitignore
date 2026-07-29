@@ -1,0 +1,48 @@
+# ── Python bytecode / caches ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments (project-local) ──
+venv/
+venv2/
+venv_test/
+env/
+
+# ── Auto-generated dependency marker ──
+deps_ok.marker
+
+# ── Runtime logs / traces ──
+*.log
+vbs_trace.log
+bat_trace.log
+launch_trace.log
+voice_control_error.log
+
+# ── OCR runtime artifacts ──
+ocr_last_match.png
+@AutomationLog.txt
+
+# ── Downloaded installers / extracted third-party tools (not source) ──
+*.msi
+*.exe
+*.7z
+*.zip
+7z_new/
+7za/
+7zfull/
+innoextract/
+tesseract_portable/
+chi_sim.traineddata
+
+# ── Shortcuts / editor / OS junk ──
+*.lnk
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── Secrets ──
+.env
