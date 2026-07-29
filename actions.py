@@ -55,6 +55,11 @@ def _list_visible_windows(auto, exclude_handles=None):
         try:
             if hwnd in exclude_handles:
                 continue
+            # 按标题排除"自己人"窗口：本程序 GUI 以及浏览器里打开的局域网控制页。
+            # 控制页会把历史指令渲染成「你：xxx」文本节点，不排除的话指令会
+            # 匹配到自己命令的回声（静态文本还点不动，Invoke 报"事件无订户"）。
+            if title and any(kw in title for kw in _SELF_TITLE_KEYWORDS):
+                continue
             try:
                 ctrl = auto.ControlFromHandle(hwnd)
             except Exception:  # noqa: BLE001
@@ -593,7 +598,7 @@ def _click_desktop_icon(name, preview=False):
             label = ""
         if not label:
             continue
-        if label == name or name in label or label in name:
+        if label == name or name in label or (len(label) >= 2 and label in name):
             target = (item, label)
             break
     if target is None:
@@ -660,9 +665,14 @@ def _click_by_name(params):
 
     def _match(name, label):
         # 精确 / 名称含关键词 / 关键词含短名（缩写也能命中）
+        # 反向包含（label in name）要求控件名至少 2 个字符：
+        # 部分 Web/Electron 应用会把文字暴露成单字符控件（如「所」「有」），
+        # 允许单字符反向命中会出现「找所有书签却点了所」的误触。
         if not label:
             return False
-        return label == name or name in label or label in name
+        if label == name or name in label:
+            return True
+        return len(label) >= 2 and label in name
 
     def _direct_find(root, name):
         """uiautomation 直接定位（有时比手动遍历命中率更高）。"""
@@ -759,14 +769,15 @@ def _click_by_name(params):
                     f"OCR 尝试：{tip}{traversed_note}\n"
                     f"（若控件没暴露可访问名称，已用 OCR 在整屏扫描文字；确认目标文字可见、未被遮挡、非图标/图片按钮）")
 
-        # 选最佳：精确 > 名称含关键词 > 关键词含短名；同档取名字最短
+        # 选最佳：精确 > 名称含关键词 > 关键词含短名；
+        # 前两档同档取名字最短（最贴近），反向包含档取名字最长（重叠越多越具体）
         def _score(item):
             _, label = item
             if label == name:
                 return (0, len(label))
             if name in label:
                 return (1, len(label))
-            return (2, len(label))
+            return (2, -len(label))
 
         candidates.sort(key=_score)
         target, found_label = candidates[0]
@@ -777,8 +788,19 @@ def _click_by_name(params):
             target.SetFocus()
         except Exception:  # noqa: BLE001
             pass
+        _suffix = "（右键）" if right else ("（双击）" if double else "")
+
+        def _mouse_click():
+            """真实鼠标点击控件中心（不依赖控件挂事件）。"""
+            if right:
+                target.ClickByMouse(button="right")
+            elif double:
+                target.DoubleClickByMouse()
+            else:
+                target.ClickByMouse()
+
         try:
-            # 优先用控件自身的高层方法（Click/DoubleClick/RightClick），
+            # 优先用控件自身的高层方法（Click/DoubleClick/RightClick，走 UIA Invoke），
             # 缺失则回退到鼠标事件；默认单击。
             if right:
                 if hasattr(target, "RightClick"):
@@ -796,8 +818,13 @@ def _click_by_name(params):
                 else:
                     target.ClickByMouse()
         except Exception as e:  # noqa: BLE001
-            return f"找到控件「{found_label}」但点击失败：{e}"
-        _suffix = "（右键）" if right else ("（双击）" if double else "")
+            # Invoke 失败（典型：0x80040201 事件无订户——静态文本/未挂事件的控件）
+            # -> 回退真实鼠标点击控件中心再试一次
+            try:
+                _mouse_click()
+                return f"已点击控件：{found_label}（{scope}，鼠标兜底）{_suffix}"
+            except Exception as e2:  # noqa: BLE001
+                return f"找到控件「{found_label}」但点击失败：{e}；鼠标兜底也失败：{e2}"
         return f"已点击控件：{found_label}（{scope}）{_suffix}"
     except Exception as e:  # noqa: BLE001
         return f"按名称点击失败：{e}"

@@ -46,3 +46,6 @@ Thumbs.db
 
 # ── Secrets ──
 .env
+
+# ── WorkBuddy workspace data (memory/logs, not source) ──
+.workbuddy/

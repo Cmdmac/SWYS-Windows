@@ -68,4 +68,51 @@ r=actions._click_by_name({'name':'发送'})
 print('直接定位兜底:', r, '| hidden.clicked=', hidden.clicked)
 assert hidden.clicked is True
 
+# 5) 反向包含防误点：单字符控件名不应命中多字关键词（「所有书签」不应点到「所」）
+c_bad=Ctrl('所',ctype='Button',handle=1)
+win5=Ctrl('窗口5',[c_bad],ctype='Window',handle=1)
+build_mock(c_bad,[win5])
+r=actions._click_by_name({'name':'所有书签'})
+print('单字符防误点:', r[:40], '| 所.clicked=', c_bad.clicked, '(应为False)')
+assert c_bad.clicked is False and '已点击' not in r
+
+# 6) 反向包含仍允许 >=2 字符的短名缩写命中（「点击编辑按钮」可命中「编辑」）
+c_ok=Ctrl('编辑',ctype='Button',handle=1)
+win6=Ctrl('窗口6',[c_ok],ctype='Window',handle=1)
+build_mock(c_ok,[win6])
+r=actions._click_by_name({'name':'点击编辑按钮'})
+print('缩写仍命中  :', r, '| 编辑.clicked=', c_ok.clicked, '(应为True)')
+assert c_ok.clicked is True
+
+# 7) Invoke 报"事件无订户"（静态文本控件）-> 回退真实鼠标点击
+class BrokenInvokeCtrl(Ctrl):
+    def Click(self):
+        raise Exception("(-2147220991, '事件无法调用任何订户', (None, None, None, 0, None))")
+
+c_brk=BrokenInvokeCtrl('订单',ctype='Text',handle=1)
+win7=Ctrl('窗口7',[c_brk],ctype='Window',handle=1)
+build_mock(c_brk,[win7])
+r=actions._click_by_name({'name':'订单'})
+print('Invoke失败兜底:', r, '| clicked=', c_brk.clicked, '(应为True)')
+assert c_brk.clicked is True and '鼠标兜底' in r
+
+# 8) 标题含"文本控制 Windows"的窗口（浏览器里的局域网控制页）应被排除，避免匹配到日志回声
+class _MockAuto:
+    @staticmethod
+    def ControlFromHandle(hwnd):
+        return Ctrl('窗口', handle=hwnd)
+
+_orig_enum = actions.winctl.enum_visible_windows
+actions.winctl.enum_visible_windows = lambda exclude_pid=None: [
+    (100, 9999, 'chrome.exe', '局域网控制台 · 文本控制 Windows - Google Chrome', (0,0,100,100)),
+    (101, 9999, 'chrome.exe', '立创商城 - Google Chrome', (0,0,100,100)),
+]
+try:
+    wins8 = actions._list_visible_windows(_MockAuto)
+finally:
+    actions.winctl.enum_visible_windows = _orig_enum
+hwnds8 = [w[3] for w in wins8]
+print('控制页窗口排除:', hwnds8, '(应只含 101)')
+assert hwnds8 == [101]
+
 print('ALL_PASS')

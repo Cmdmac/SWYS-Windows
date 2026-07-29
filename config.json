@@ -2,15 +2,15 @@
   "endpoint": "https://api.openai.com/v1",
   "api_key": "",
   "model": "gpt-4o-mini",
-  "auto_speak": false,
+  "auto_speak": true,
   "speech_rate": 170,
   "language": "zh-CN",
   "confirm_destructive": true,
-  "tesseract_path": "C:\\Users\\cmdma\\WorkBuddy\\2026-07-27-17-49-13\\voice_control\\tesseract_portable\\tesseract.exe",
+  "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
   "http_control": {
     "enabled": true,
     "port": 8765,
-    "allow_destructive": false
+    "allow_destructive": true
   },
   "tray": {
     "enabled": true,

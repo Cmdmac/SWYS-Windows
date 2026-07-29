@@ -15,6 +15,12 @@ DEFAULT_CONFIG = {
     "speech_rate": 170,                         # 语音语速
     "language": "zh-CN",                        # 语音识别语言
     "confirm_destructive": True,                # 关机/重启/睡眠等危险操作前二次确认
+    "tesseract_path": "",                       # Tesseract-OCR 引擎路径（留空则依次找：便携版 tesseract_portable/ -> PATH）
+    "http_control": {                           # 局域网 HTTP 控制服务
+        "enabled": True,                         # 是否开启
+        "port": 8765,                            # 监听端口
+        "allow_destructive": False,              # 是否允许局域网触发关机/重启/睡眠等危险操作
+    },
     "tray": {                                    # 系统托盘
         "enabled": True,                         # 是否启用托盘图标
         "start_minimized": False,                # 启动后直接最小化到托盘（点图标可打开窗口）；False=启动即显示窗口
@@ -23,13 +29,16 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    """加载配置，缺失字段用默认值补齐。"""
+    """加载配置，缺失字段用默认值补齐；配置文件里的额外字段原样保留。
+    注意：不能按 DEFAULT_CONFIG 过滤用户键——否则「加载时丢键、保存时写回」
+    会把 http_control / tesseract_path 等设置从 config.json 里冲掉。"""
     cfg = dict(DEFAULT_CONFIG)
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 user_cfg = json.load(f)
-            cfg.update({k: v for k, v in user_cfg.items() if k in DEFAULT_CONFIG})
+            if isinstance(user_cfg, dict):
+                cfg.update(user_cfg)
         except Exception:
             pass
     return cfg

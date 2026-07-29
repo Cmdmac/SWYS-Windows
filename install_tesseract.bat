@@ -18,20 +18,25 @@ if not exist "%INST%" (
 )
 
 echo [1/2] 正在静默安装 Tesseract-OCR ...
-"%INST%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-if errorlevel 1 (
-    echo [失败] 安装返回错误，多半是权限不足。
-    echo         请关闭本窗口，右键本脚本选择“以管理员身份运行”后重试。
-    pause & exit /b 1
-)
-
-echo [2/2] 部署中文语言包 chi_sim ...
+rem 新版 UB-Mannheim 安装包是 NSIS 打包，静默参数是 /S（不是 Inno 的 /VERYSILENT）
+"%INST%" /S
+rem NSIS 静默安装会后台分离，等待 tesseract.exe 出现（最多 180 秒）
 set "TESS=C:\Program Files\Tesseract-OCR"
 if not exist "%TESS%\tesseract.exe" set "TESS=C:\Program Files (x86)\Tesseract-OCR"
-if not exist "%TESS%\tesseract.exe" (
-    echo [警告] 未找到 Tesseract 安装目录，请确认安装是否成功。
-    pause & exit /b 1
-)
+set /a WAIT_N=0
+:wait_exe
+if exist "%TESS%\tesseract.exe" goto exe_ready
+set /a WAIT_N+=1
+if %WAIT_N% GEQ 90 goto exe_timeout
+timeout /t 2 /nobreak >nul
+goto wait_exe
+:exe_timeout
+echo [失败] 安装返回错误，多半是权限不足。
+echo         请关闭本窗口，右键本脚本选择“以管理员身份运行”后重试。
+pause & exit /b 1
+:exe_ready
+
+echo [2/2] 部署中文语言包 chi_sim ...
 if exist "%CHI%" (
     copy /Y "%CHI%" "%TESS%\tessdata\chi_sim.traineddata" >nul && echo   中文包已复制到 %TESS%\tessdata\
 ) else (
