@@ -6,10 +6,13 @@
 · tkinter 只能在主线程操作控件，因此托盘图标的回调统一用 root.after(0, ...) 切回主线程。
 
 托盘行为约定：
-  - 左键单击：切换主窗口的显示/隐藏（toggle）。
+  - 左键单击：切换主窗口显示/隐藏（toggle，轻微延迟以区分双击）。
+  - 左键双击：打开（显示并置前）主窗口。
+  - 右键菜单：① 打开窗口  ② 退出（真正退出程序）。
   - 右键菜单：① 打开窗口  ② 退出（真正退出程序）。
 """
 import threading
+import time
 
 TRAY_AVAILABLE = True
 try:
@@ -74,6 +77,39 @@ def save_ico(path, size=64):
     return path
 
 
+def _make_activate_handler(toggle_cb, show_cb):
+    """构造托盘左键回调：单击=切换显示/隐藏，双击=打开（显示并置前）窗口。
+
+    pystray 的 Windows 后端窗口类未启用 CS_DBLCLKS，双击托盘只会触发两次
+    单击回调（on_activate）。因此这里用时间戳区分单击/双击：
+      · 两次单击间隔 < 0.4s 视为双击 -> 调用 show_cb（并撤销待执行的 toggle，避免闪烁）；
+      · 否则视为单击 -> 短暂延迟后调用 toggle_cb（留出双击判定窗口）。
+    """
+    state = {"last": 0.0, "timer": None}
+
+    def _handler(icon):
+        now = time.time()
+        if state["last"] and (now - state["last"]) < 0.4:
+            # 双击：打开窗口，并撤销待执行的单击 toggle
+            state["last"] = 0.0
+            if state["timer"] is not None:
+                state["timer"].cancel()
+                state["timer"] = None
+            show_cb()
+        else:
+            state["last"] = now
+
+            def _maybe_toggle():
+                state["timer"] = None
+                if state["last"] and (time.time() - state["last"]) >= 0.35:
+                    toggle_cb()
+
+            state["timer"] = threading.Timer(0.4, _maybe_toggle)
+            state["timer"].start()
+
+    return _handler
+
+
 def start_tray(toggle_cb, show_cb, quit_cb):
     """在后台守护线程启动托盘图标，返回 pystray.Icon 对象（退出时调用 .stop()）。
 
@@ -93,11 +129,8 @@ def start_tray(toggle_cb, show_cb, quit_cb):
         _TrayMenuItem("退出", quit_cb),
     )
 
-    def _on_activate(icon):  # 左键单击
-        toggle_cb()
-
     icon = _TrayIcon(APP_NAME, image, APP_NAME, menu)
-    icon.on_activate = _on_activate
+    icon.on_activate = _make_activate_handler(toggle_cb, show_cb)
 
     t = threading.Thread(target=icon.run, daemon=True)
     t.start()
