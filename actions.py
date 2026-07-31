@@ -303,8 +303,18 @@ def _close_active(params):
 
 
 def _switch_window(params):
-    winctl.hotkey("alt", "tab")
-    return "已切换窗口"
+    # 在“可见、非最小化、非本程序”的窗口间循环切换：下一个 / 上一个。
+    # 排除本程序自身，避免“语音程序 ↔ 其它应用”之间死循环。
+    direction = params.get("direction", "next")
+    try:
+        ok, title = winctl.switch_window(direction, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "窗口"
+            label = "上一个" if direction == "prev" else "下一个"
+            return f"已切换到{label}窗口：{where}"
+        return "没有可切换的窗口（当前只有本程序在前台）"
+    except Exception as e:  # noqa: BLE001
+        return f"切换窗口失败：{e}"
 
 
 def _restore_active(params):

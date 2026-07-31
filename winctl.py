@@ -535,6 +535,101 @@ def top_visible_window_excluding(exclude_pid=None):
     return 0
 
 
+def visible_windows_excluding(exclude_pid=None):
+    """枚举所有“可见、未最小化、非排除进程、有标题、非工具/托盘浮窗”的顶层窗口，
+    按 Z 序（最顶层在前）返回 [(hwnd, title), ...]。
+
+    用途：构建“切换任务窗口”的窗口环，并**排除本程序自身**（语音程序运行窗口/
+    控制台），这样“下一个/上一个窗口”不会在“语音程序 ↔ 其它应用”之间来回跳。
+    """
+    import ctypes.wintypes as wt
+    excl = int(exclude_pid) if exclude_pid else 0
+    GW_OWNER = 4
+    out = []
+    buf = ctypes.create_unicode_buffer(260)
+    cloaked = wt.BOOL(0)
+
+    def _enum(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.IsIconic(hwnd):          # 已最小化：跳过（Alt+Tab 本也不含）
+                return True
+            if user32.GetWindow(hwnd, GW_OWNER):  # -owned 浮窗/工具窗：跳过
+                return True
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if excl and p.value == excl:       # 排除本程序自身
+                return True
+            # 排除 UWP 的 cloaked（隐藏）窗口
+            try:
+                dwm = getattr(user32, "DwmGetWindowAttribute", None)
+                if dwm:
+                    dwm(hwnd, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED=14
+            except Exception:  # noqa: BLE001
+                pass
+            if cloaked.value:
+                return True
+            r = wt.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return True
+            if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+                return True
+            user32.GetWindowTextW(hwnd, buf, 260)
+            title = buf.value.strip()
+            if not title:                      # 无标题栏的窗口（桌面、任务栏等）排除
+                return True
+            out.append((int(hwnd), title))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(EnumWindowsProc(_enum), 0)
+    return out
+
+
+def switch_window(direction="next", exclude_pid=None):
+    """在“可见、未最小化、非本程序”的窗口之间循环切换（等价于智能 Alt+Tab）。
+
+    - direction="next" -> 下一个窗口；direction="prev" -> 上一个窗口。
+    - 优先用 SetForegroundWindow 直接把目标窗口提到前台：这样能**排除本程序自身**，
+      且循环顺序明确可控（不会在“语音程序 ↔ 其它”之间死循环）。
+    - 若系统因“后台进程前台权限”拒绝（SetForegroundWindow 返回 0），则回退到
+      系统原生 Alt+Tab / Alt+Shift+Tab（此时由 Windows 决定环，仍可用）。
+    返回 (ok: bool, title: str)。
+    """
+    wins = visible_windows_excluding(exclude_pid)
+    if not wins:
+        return (False, "")
+    fg = user32.GetForegroundWindow()
+    idx = -1
+    for i, (h, _) in enumerate(wins):
+        if h == fg:
+            idx = i
+            break
+    if direction == "prev":
+        target = wins[(idx - 1) % len(wins)]
+    else:
+        target = wins[(idx + 1) % len(wins)]
+    hwnd, title = target
+    try:
+        try:
+            user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
+        except Exception:  # noqa: BLE001
+            pass
+        ok = bool(user32.SetForegroundWindow(hwnd))
+    except Exception:  # noqa: BLE001
+        ok = False
+    if not ok:
+        # 系统拒绝后台置前台：回退原生任务切换（此时由 Windows 管理窗口环）
+        if direction == "prev":
+            hotkey("alt", "shift", "tab")
+        else:
+            hotkey("alt", "tab")
+    return (True, title)
+
+
 def control_top_window(action, exclude_pid=None):
     """对“最顶层可见窗口（排除 exclude_pid）”执行窗口操作。
 

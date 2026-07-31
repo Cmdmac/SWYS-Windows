@@ -181,8 +181,16 @@ def match_simple(text):
         return ("steps", [{"action": "restore_active", "params": {}}], "还原窗口")
     if "关闭" in t and ("窗口" in t or "当前" in t or "这个" in t or "此" in t):
         return ("steps", [{"action": "close_active", "params": {}}], "关闭当前窗口")
-    if "切换窗口" in t or "切换上一个窗口" in t or "下一个窗口" in t or "切到下一个窗口" in t:
-        return ("steps", [{"action": "switch_window", "params": {}}], "切换窗口")
+    # 切换任务窗口：上一个 / 下一个（等价于 Alt+Shift+Tab / Alt+Tab）
+    # 同时支持“上一个/上個/上个”与“下一个/下個/下个”等多种口语说法
+    if ("上一个窗口" in t or "上個窗口" in t or "上个窗口" in t
+            or "上一个任务" in t or "上個任务" in t or "上个任务" in t or "上一个任务窗口" in t
+            or "切换上一个窗口" in t or "前一个窗口" in t or "切换前一个窗口" in t):
+        return ("steps", [{"action": "switch_window", "params": {"direction": "prev"}}], "切换到上一个窗口")
+    if ("下一个窗口" in t or "下個窗口" in t or "下个窗口" in t
+            or "下一个任务" in t or "下個任务" in t or "下个任务" in t or "下一个任务窗口" in t
+            or "切换下一个窗口" in t or "后一个窗口" in t or "切到下一个窗口" in t or "切换窗口" in t):
+        return ("steps", [{"action": "switch_window", "params": {"direction": "next"}}], "切换到下一个窗口")
 
     # 文件管理器导航：向上一级 / 返回·后退 / 前进
     # 定向到“最顶层可见窗口”（而非当前前台窗口），确保键发到资源管理器/浏览器本身，
