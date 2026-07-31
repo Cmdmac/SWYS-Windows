@@ -263,8 +263,18 @@ def match_simple(text):
         if ("打开" + name) in t or ("访问" + name) in t:
             return ("steps", [{"action": "open_url", "params": {"url": url}}], f"打开 {name}")
 
+    # 打开系统内置应用 / 特殊位置（必须放在“打开文件 <路径>”规则之前，
+    # 否则“打开文件管理器”会被拆成 打开+文件+管理器 当成路径 → WinError 2）
+    m = re.search(
+        r"(打开|启动|运行)\s*"
+        r"(文件管理器|文件资源管理器|资源管理器|我的电脑|此电脑|回收站|控制面板|设置|任务管理器|计算器|画图|终端|命令提示符|命令符)",
+        t,
+    )
+    if m:
+        return ("steps", [{"action": "open_app", "params": {"name": m.group(2)}}], f"打开 {m.group(2)}")
+
     # 打开文件 / 文件夹（含盘符路径，兼容反斜杠与正斜杠）
-    m = re.search(r"(打开|运行)\s*(文件|文件夹|目录)\s*[:：]?\s*(\S+)", t)
+    m = re.search(r"(打开|运行)\s*(文件夹|文件|目录)\s*[:：]?\s*(\S+)", t)
     if m:
         return ("steps", [{"action": "open_file", "params": {"path": m.group(3).strip()}}], f"打开 {m.group(3).strip()}")
     m = re.search(r"(打开|运行)\s*([A-Za-z]:[\\/][^\s，。,]+)", t)
