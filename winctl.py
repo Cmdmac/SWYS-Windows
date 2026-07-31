@@ -173,6 +173,15 @@ def hotkey(*keys):
             user32.keybd_event(vk, 0, 0x0002, 0)
 
 
+def show_desktop():
+    """显示桌面（等价于按下 Win+D）。
+
+    最小化所有窗口、只露出桌面；再次触发可恢复之前的窗口布局。
+    这是系统原生的“显示桌面”切换，不依赖前台窗口是谁，也不会遗漏任何窗口。
+    """
+    hotkey("win", "d")
+
+
 def available():
     """是否使用了真实的 pyautogui 后端（仅用于诊断输出）。"""
     return _HAS_PYAUTOGUI

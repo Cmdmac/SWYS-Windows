@@ -171,6 +171,8 @@ def match_simple(text):
         return ("steps", [{"action": "volume_down", "params": {}}], "减小音量")
 
     # 窗口操作
+    if "回到桌面" in t or "显示桌面" in t or "只看桌面" in t or "看桌面" in t:
+        return ("steps", [{"action": "show_desktop", "params": {}}], "回到桌面（显示桌面）")
     if "最小化" in t:
         return ("steps", [{"action": "minimize_active", "params": {}}], "最小化当前窗口")
     if "最大化" in t:

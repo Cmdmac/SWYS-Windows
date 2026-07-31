@@ -310,6 +310,16 @@ def _restore_active(params):
     return f"已还原窗口：{title or '（无标题窗口）'}"
 
 
+def _show_desktop(params):
+    # 显示桌面：最小化所有窗口、只露出桌面（等价于 Win+D）。
+    # 再次触发可恢复之前的窗口布局，由系统原生处理，不依赖前台窗口是谁。
+    try:
+        winctl.show_desktop()
+        return "已回到桌面（其它窗口已最小化）"
+    except Exception as e:  # noqa: BLE001
+        return f"回到桌面失败：{e}"
+
+
 def _click_by_name_ocr(params, preview=False):
     """
     OCR 模式：截取当前窗口画面，识别屏上真实文字，按坐标点击。
@@ -908,6 +918,7 @@ ACTION_HANDLERS = {
     "maximize_active": _maximize_active,
     "restore_active": _restore_active,
     "close_active": _close_active,
+    "show_desktop": _show_desktop,
     "switch_window": _switch_window,
     "click_by_name": _click_by_name,
     "double_click": _double_click,
