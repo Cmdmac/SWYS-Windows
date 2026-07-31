@@ -185,9 +185,10 @@ def match_simple(text):
         return ("steps", [{"action": "switch_window", "params": {}}], "切换窗口")
 
     # 鼠标滚动（上滑 / 下滑）：amount 为正=向上滚，为负=向下滚
-    if re.search(r"上滑|向上滑|上滚|向上滚|往上滚|向上滚动", t):
+    # 兼容语音识别把“滑(huá)”误写成同音字“划(huá)”的情况
+    if re.search(r"上滑|向上滑|上划|向上划|上滚|向上滚|往上滚|向上滚动|滚上去", t):
         return ("steps", [{"action": "scroll", "params": {"amount": 3}}], "向上滚动（上滑）")
-    if re.search(r"下滑|向下滑|下滚|向下滚|往下滚|向下滚动", t):
+    if re.search(r"下滑|向下滑|下划|向下划|下滚|向下滚|往下滚|向下滚动|滚下来|滚动", t):
         return ("steps", [{"action": "scroll", "params": {"amount": -3}}], "向下滚动（下滑）")
 
     # 点击 / 鼠标交互（可见可说：说“双击/右键/点击 + 控件名”就直接按名操作，不依赖大模型）
@@ -242,12 +243,6 @@ def match_simple(text):
     if m:
         return ("steps", [{"action": "move_mouse", "params": {"x": int(m.group(2)), "y": int(m.group(3))}}],
                 f"移动鼠标到 ({m.group(2)}, {m.group(3)})")
-
-    # 滚动
-    if re.search(r"向上滚|往上滚|向上滚动|滚上去", t):
-        return ("steps", [{"action": "scroll", "params": {"amount": 300}}], "向上滚动")
-    if re.search(r"向下滚|往下滚|向下滚动|滚下来|滚动", t):
-        return ("steps", [{"action": "scroll", "params": {"amount": -300}}], "向下滚动")
 
     # 裸「窗口」：在鼠标当前位置点击该窗口（满足“说窗口就点击”的直觉）
     if re.fullmatch(r"(当前|这个|此)?窗口", t) or t in ("窗口", "当前窗口", "这个窗口", "此窗口"):
