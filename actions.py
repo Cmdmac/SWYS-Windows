@@ -276,18 +276,25 @@ def _lock_screen(params):
 
 
 def _minimize_active(params):
-    winctl.hotkey("win", "down")
-    return "已最小化当前窗口"
+    # 作用于“最顶层可见窗口（排除本程序自身）”，而不是语音控制台自己
+    ok, title = winctl.control_top_window("minimize", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可最小化的窗口（前台没有其它可见窗口）"
+    return f"已最小化窗口：{title or '（无标题窗口）'}"
 
 
 def _maximize_active(params):
-    winctl.hotkey("win", "up")
-    return "已最大化当前窗口"
+    ok, title = winctl.control_top_window("maximize", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可最大化的窗口（前台没有其它可见窗口）"
+    return f"已最大化窗口：{title or '（无标题窗口）'}"
 
 
 def _close_active(params):
-    winctl.hotkey("alt", "f4")
-    return "已关闭当前窗口"
+    ok, title = winctl.control_top_window("close", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可关闭的窗口（前台没有其它可见窗口）"
+    return f"已关闭窗口：{title or '（无标题窗口）'}"
 
 
 def _switch_window(params):
@@ -296,9 +303,11 @@ def _switch_window(params):
 
 
 def _restore_active(params):
-    # Win+↓：最大化时还原为窗口，普通窗口时最小化；这里用作“还原窗口”
-    winctl.hotkey("win", "down")
-    return "已还原窗口"
+    # 还原最顶层可见窗口（排除本程序自身）为正常大小
+    ok, title = winctl.control_top_window("restore", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可还原的窗口（前台没有其它可见窗口）"
+    return f"已还原窗口：{title or '（无标题窗口）'}"
 
 
 def _click_by_name_ocr(params, preview=False):

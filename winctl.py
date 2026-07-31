@@ -294,6 +294,92 @@ def enum_visible_windows(exclude_pid=None):
     return result
 
 
+def top_visible_window_excluding(exclude_pid=None):
+    """返回“最顶层可见窗口”的 hwnd，排除指定进程（通常是本程序自身）。
+
+    - 优先取前台窗口（GetForegroundWindow）；若它是被排除的进程、或不可见/已最小化，
+      则沿 Z 序（GetWindow(GW_HWNDNEXT)）向下找下一个“可见、未最小化、非排除进程”的窗口。
+    - 找不到返回 0。
+
+    用途：关闭/最大化/最小化等指令应作用于用户真正在用的那个顶层窗口，
+    而不是语音控制台自身（用户正在跟它交互时它常是前台窗口）。
+    """
+    import ctypes.wintypes as wt
+    GW_HWNDNEXT = 2
+    excl = int(exclude_pid) if exclude_pid else 0
+
+    def _candidate(hwnd):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return False
+            if user32.IsIconic(hwnd):  # 已最小化：跳过，避免二次最小化/关闭
+                return False
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if excl and p.value == excl:
+                return False
+            r = wt.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return False
+            if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+                return False
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    # 1) 前台窗口优先
+    fg = user32.GetForegroundWindow()
+    if fg and _candidate(fg):
+        return int(fg)
+    # 2) 沿 Z 序向下找（跳过被排除/不可见/最小化的窗口）
+    hwnd = fg if fg else user32.GetWindow(user32.GetDesktopWindow(), GW_HWNDNEXT)
+    seen = 0
+    while hwnd and seen < 1024:
+        seen += 1
+        if _candidate(hwnd):
+            return int(hwnd)
+        hwnd = user32.GetWindow(hwnd, GW_HWNDNEXT)
+    return 0
+
+
+def control_top_window(action, exclude_pid=None):
+    """对“最顶层可见窗口（排除 exclude_pid）”执行窗口操作。
+
+    action: 'minimize' | 'maximize' | 'restore' | 'close'
+    返回 (ok: bool, title: str)。title 为被操作窗口标题，便于反馈给用户。
+
+    直接基于窗口句柄操作（ShowWindow / PostMessage WM_CLOSE），
+    不依赖“前台窗口恰好是谁”，因此即使语音控制台自身在前台也不会误伤自己。
+    """
+    import ctypes.wintypes as wt
+    SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE = 6, 3, 9
+    WM_CLOSE = 0x0010
+    _cmds = {"minimize": SW_MINIMIZE, "maximize": SW_MAXIMIZE, "restore": SW_RESTORE}
+
+    hwnd = top_visible_window_excluding(exclude_pid)
+    if not hwnd:
+        return (False, "")
+    buf = ctypes.create_unicode_buffer(260)
+    user32.GetWindowTextW(hwnd, buf, 260)
+    title = buf.value.strip()
+
+    if action in _cmds:
+        ok = bool(user32.ShowWindow(hwnd, _cmds[action]))
+        return (ok, title)
+    if action == "close":
+        ok = bool(user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+        if not ok:
+            # 兜底：把窗口提到前台后用 Alt+F4（极少数应用忽略 PostMessage WM_CLOSE）
+            try:
+                user32.SetForegroundWindow(hwnd)
+            except Exception:  # noqa: BLE001
+                pass
+            hotkey("alt", "f4")
+            ok = True
+        return (ok, title)
+    return (False, title)
+
+
 def process_name_by_pid(pid):
     """根据进程 PID 返回进程映像名（如 notepad.exe）。失败返回空串。"""
     try:
