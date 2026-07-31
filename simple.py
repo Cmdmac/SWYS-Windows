@@ -184,6 +184,12 @@ def match_simple(text):
     if "切换窗口" in t or "切换上一个窗口" in t or "下一个窗口" in t or "切到下一个窗口" in t:
         return ("steps", [{"action": "switch_window", "params": {}}], "切换窗口")
 
+    # 鼠标滚动（上滑 / 下滑）：amount 为正=向上滚，为负=向下滚
+    if re.search(r"上滑|向上滑|上滚|向上滚|往上滚|向上滚动", t):
+        return ("steps", [{"action": "scroll", "params": {"amount": 3}}], "向上滚动（上滑）")
+    if re.search(r"下滑|向下滑|下滚|向下滚|往下滚|向下滚动", t):
+        return ("steps", [{"action": "scroll", "params": {"amount": -3}}], "向下滚动（下滑）")
+
     # 点击 / 鼠标交互（可见可说：说“双击/右键/点击 + 控件名”就直接按名操作，不依赖大模型）
     # 窗口菜单 / 控制菜单 / 系统菜单 -> 打开当前窗口的系统菜单 (Alt+Space)
     if re.search(r"窗口菜单|控制菜单|系统菜单", t):

@@ -264,7 +264,7 @@ _PAGE_HTML = r"""<!DOCTYPE html>
   if (BASE) document.getElementById("base").value = BASE;
 
   var QUICK = ["编辑","保存","复制","粘贴","撤销","双击编辑","右键发送",
-               "回收站","截图","锁屏","最小化窗口","关闭窗口","回到桌面","打开记事本","帮助"];
+               "回收站","截图","锁屏","最小化窗口","关闭窗口","回到桌面","向上滚动","向下滚动","打开记事本","帮助"];
 
   var chipsEl = document.getElementById("chips");
   QUICK.forEach(function (q) {
