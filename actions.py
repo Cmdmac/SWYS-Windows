@@ -202,9 +202,9 @@ def _double_click(params):
     x, y = params.get("x"), params.get("y")
     try:
         if x is not None and y is not None:
-            winctl.doubleClick(int(x), int(y))
+            winctl.double_click(int(x), int(y))
             return f"已双击 ({x}, {y})"
-        winctl.doubleClick()
+        winctl.double_click()
         return "已双击（鼠标当前位置）"
     except Exception as e:  # noqa: BLE001
         return f"双击失败：{e}"
@@ -214,9 +214,9 @@ def _right_click(params):
     x, y = params.get("x"), params.get("y")
     try:
         if x is not None and y is not None:
-            winctl.rightClick(int(x), int(y))
+            winctl.right_click(int(x), int(y))
             return f"已右键点击 ({x}, {y})"
-        winctl.rightClick()
+        winctl.right_click()
         return "已右键点击（鼠标当前位置）"
     except Exception as e:  # noqa: BLE001
         return f"右键点击失败：{e}"
@@ -239,7 +239,7 @@ def _scroll(params):
         ok, title = winctl.scroll_top_window(amount, exclude_pid=_SELF_PID)
         if ok:
             where = title or "当前窗口"
-            return f"已在「{where}」上滚动 {amount}"
+            return f"已在「{where}」上滚动 {amount}（滚轮刻度）"
         # 没有其它可见窗口（只有语音控制台自身）：回退到当前鼠标位置滚动
         winctl.scroll(amount)
         return f"已滚动 {amount}（未找到其它可见窗口，按当前鼠标位置滚动）"
@@ -323,6 +323,26 @@ def _show_desktop(params):
         return "已回到桌面（其它窗口已最小化）"
     except Exception as e:  # noqa: BLE001
         return f"回到桌面失败：{e}"
+
+
+def _explorer_nav(params):
+    # 文件管理器导航：向上一级 (Alt+↑) / 返回·后退 (Alt+←) / 前进 (Alt+→)。
+    # 定向到“最顶层可见窗口（排除本程序自身）”，确保键发到资源管理器/浏览器本身，
+    # 而不是说指令时处于前台的语音控制台。
+    direction = (params.get("direction") or "").strip()
+    _labels = {
+        "up": "向上一级 (Alt+↑)",
+        "back": "返回/后退 (Alt+←)",
+        "forward": "前进 (Alt+→)",
+    }
+    try:
+        ok, title = winctl.navigate_top_window(direction, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "当前窗口"
+            return f"已在「{where}」执行：{_labels.get(direction, direction)}"
+        return "没有可导航的窗口（前台没有其它可见窗口）"
+    except Exception as e:  # noqa: BLE001
+        return f"导航失败：{e}"
 
 
 def _click_by_name_ocr(params, preview=False):
@@ -924,6 +944,7 @@ ACTION_HANDLERS = {
     "restore_active": _restore_active,
     "close_active": _close_active,
     "show_desktop": _show_desktop,
+    "explorer_nav": _explorer_nav,
     "switch_window": _switch_window,
     "click_by_name": _click_by_name,
     "double_click": _double_click,
