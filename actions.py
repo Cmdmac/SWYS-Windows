@@ -97,6 +97,12 @@ APP_ALIASES = {
     "explorer": "explorer",
     "我的电脑": "explorer",
     "此电脑": "explorer",
+    "设备管理器": "devmgmt.msc",
+    "回收站": "shell:RecycleBinFolder",
+    "服务": "services.msc",
+    "注册表": "regedit",
+    "计算机管理": "compmgmt.msc",
+    "磁盘管理": "diskmgmt.msc",
     "控制面板": "control",
     "设置": "ms-settings:",
     "任务管理器": "taskmgr",
@@ -122,8 +128,9 @@ def _open_app(params):
         return "未指定应用名"
     exe = APP_ALIASES.get(name.lower(), name)
     try:
-        # Windows 的 start 命令可以靠应用名/协议启动
-        subprocess.Popen(f'start "" "{exe}"', shell=True)
+        # os.startfile 用 ShellExecute：支持 .msc / shell: / ::{...} / 应用名，
+        # 且失败时只抛异常（由 except 返回文本），不会弹出系统“找不到文件”对话框
+        os.startfile(exe)
         return f"已打开：{name}"
     except Exception as e:  # noqa: BLE001
         return f"打开 {name} 失败：{e}"
