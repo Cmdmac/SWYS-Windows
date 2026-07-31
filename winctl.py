@@ -146,6 +146,41 @@ def scroll(amount):
         _mouse_event(_WHEEL, 0, 0, amount * 120)
 
 
+def scroll_top_window(amount, exclude_pid=None):
+    """在最顶层可见窗口（排除 exclude_pid）上滚动鼠标滚轮。
+
+    普通 scroll() 依赖“鼠标当前位置下的窗口”，若光标不在目标窗口上则无效。
+    这里先锁定最顶层可见窗口（通常是用户正在看的那个，且排除语音控制台自身），
+    把鼠标移到它中心（确保滚轮落在它上面），滚动后再把光标移回原位置（避免干扰用户）。
+    返回 (ok: bool, title: str)。
+    """
+    import ctypes.wintypes as wt
+    hwnd = top_visible_window_excluding(exclude_pid)
+    if not hwnd:
+        return (False, "")
+    buf = ctypes.create_unicode_buffer(260)
+    user32.GetWindowTextW(hwnd, buf, 260)
+    title = buf.value.strip()
+
+    try:
+        # 记录原鼠标位置，滚动后恢复
+        cur = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(cur))
+        # 移到窗口中心（确保滚轮事件落在它上面）
+        r = wt.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            cx = (r.left + r.right) // 2
+            cy = (r.top + r.bottom) // 2
+            move(cx, cy)
+        # 滚动（滚轮事件作用于当前鼠标位置 → 现在落在目标窗口上）
+        scroll(amount)
+        # 恢复鼠标位置
+        move(int(cur.x), int(cur.y))
+        return (True, title)
+    except Exception:  # noqa: BLE001
+        return (True, title)
+
+
 # ---------------------------------------------------------------------------
 # 键盘
 # ---------------------------------------------------------------------------

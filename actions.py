@@ -236,8 +236,13 @@ def _move_mouse(params):
 def _scroll(params):
     amount = int(params.get("amount", 0))
     try:
+        ok, title = winctl.scroll_top_window(amount, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "当前窗口"
+            return f"已在「{where}」上滚动 {amount}"
+        # 没有其它可见窗口（只有语音控制台自身）：回退到当前鼠标位置滚动
         winctl.scroll(amount)
-        return f"已滚动 {amount}"
+        return f"已滚动 {amount}（未找到其它可见窗口，按当前鼠标位置滚动）"
     except Exception as e:  # noqa: BLE001
         return f"滚动失败：{e}"
 
