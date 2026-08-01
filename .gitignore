@@ -35,7 +35,6 @@ ocr_last_match.png
 7za/
 7zfull/
 innoextract/
-tesseract_portable/
 chi_sim.traineddata
 
 # ── Shortcuts / editor / OS junk ──
@@ -52,3 +51,7 @@ Thumbs.db
 
 # ── Vendored OCR python libs (portable payload, not source) ──
 libs/
+
+# ── 便携 Tesseract 引擎（入库分发：撤销上面的通配排除）──
+!tesseract_portable/tesseract.exe
+!tesseract_portable/tessdata/*.traineddata

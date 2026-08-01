@@ -235,8 +235,8 @@ _PAGE_HTML = r"""<!DOCTYPE html>
     <button onclick="send()">发送</button>
   </div>
 
-  <details class="api" open>
-    <summary>🔌 HTTP 接口调用方式（可集成到脚本 / 其它程序）</summary>
+  <details class="api">
+    <summary>🔌 HTTP 接口调用方式（点击展开：curl / Python 示例，可集成到脚本 / 其它程序）</summary>
     <p class="api-hint">服务器地址：<code id="apiBase">（自动检测）</code><br>
     把下面任意一段里的地址换成你的服务器地址即可，示例已自动填入。</p>
     <div class="codecap">① 发送指令（POST JSON）</div>
