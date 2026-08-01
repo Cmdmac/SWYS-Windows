@@ -101,8 +101,8 @@ GENERIC_ACTIONS = {
     "关闭文件": (["ctrl", "w"], "关闭 (Ctrl+W)"),
     # 浏览 / 视图
     "刷新": (["f5"], "刷新 (F5)"),
-    "后退": (["alt", "left"], "后退 (Alt+←)"),
-    "前进": (["alt", "right"], "前进 (Alt+→)"),
+    # 注意：「后退/前进」已移到下方“文件管理器导航”专用路由（explorer_nav），
+    # 它会定向到“最顶层可见窗口”而不是当前前台窗口，避免键发到语音控制台自身。
     # 注意：「编辑/文件/视图/格式/工具」等菜单名不在此处——
     # 它们会落到 click_by_name，先确认屏幕上（且是别的应用）真的有该菜单才点击，
     # 而不是盲发 Alt+字母。这符合“可见可说”的设计意图。
@@ -171,6 +171,8 @@ def match_simple(text):
         return ("steps", [{"action": "volume_down", "params": {}}], "减小音量")
 
     # 窗口操作
+    if "回到桌面" in t or "返回桌面" in t or "显示桌面" in t or "只看桌面" in t or "看桌面" in t:
+        return ("steps", [{"action": "show_desktop", "params": {}}], "回到桌面（显示桌面）")
     if "最小化" in t:
         return ("steps", [{"action": "minimize_active", "params": {}}], "最小化当前窗口")
     if "最大化" in t:
@@ -179,8 +181,33 @@ def match_simple(text):
         return ("steps", [{"action": "restore_active", "params": {}}], "还原窗口")
     if "关闭" in t and ("窗口" in t or "当前" in t or "这个" in t or "此" in t):
         return ("steps", [{"action": "close_active", "params": {}}], "关闭当前窗口")
-    if "切换窗口" in t or "切换上一个窗口" in t or "下一个窗口" in t or "切到下一个窗口" in t:
-        return ("steps", [{"action": "switch_window", "params": {}}], "切换窗口")
+    # 切换任务窗口：上一个 / 下一个（等价于 Alt+Shift+Tab / Alt+Tab）
+    # 同时支持“上一个/上個/上个”与“下一个/下個/下个”等多种口语说法
+    if ("上一个窗口" in t or "上個窗口" in t or "上个窗口" in t
+            or "上一个任务" in t or "上個任务" in t or "上个任务" in t or "上一个任务窗口" in t
+            or "切换上一个窗口" in t or "前一个窗口" in t or "切换前一个窗口" in t):
+        return ("steps", [{"action": "switch_window", "params": {"direction": "prev"}}], "切换到上一个窗口")
+    if ("下一个窗口" in t or "下個窗口" in t or "下个窗口" in t
+            or "下一个任务" in t or "下個任务" in t or "下个任务" in t or "下一个任务窗口" in t
+            or "切换下一个窗口" in t or "后一个窗口" in t or "切到下一个窗口" in t or "切换窗口" in t):
+        return ("steps", [{"action": "switch_window", "params": {"direction": "next"}}], "切换到下一个窗口")
+
+    # 文件管理器导航：向上一级 / 返回·后退 / 前进
+    # 定向到“最顶层可见窗口”（而非当前前台窗口），确保键发到资源管理器/浏览器本身，
+    # 而不是语音控制台。注意：向上一级 必须放在 返回 之前（“返回上一级”按向上一级处理）。
+    if re.search(r"向上一级|上一级|上级目录|往上一级|上一层|回到上级|上移一级|退回上一级", t):
+        return ("steps", [{"action": "explorer_nav", "params": {"direction": "up"}}], "向上一级（Alt+↑）")
+    if re.search(r"后退|返回(?!桌面)|往上一步|返回上一步|上一页", t):
+        return ("steps", [{"action": "explorer_nav", "params": {"direction": "back"}}], "返回/后退（Alt+←）")
+    if re.search(r"前进|前进一步|下一页", t):
+        return ("steps", [{"action": "explorer_nav", "params": {"direction": "forward"}}], "前进（Alt+→）")
+
+    # 鼠标滚动（上滑 / 下滑）：amount 为正=向上滚，为负=向下滚（单位：鼠标滚轮刻度，1 刻度=120）
+    # 兼容语音识别把“滑(huá)”误写成同音字“划(huá)”的情况
+    if re.search(r"上滑|向上滑|上划|向上划|上滚|向上滚|往上滚|向上滚动|滚上去", t):
+        return ("steps", [{"action": "scroll", "params": {"amount": 50}}], "向上滚动（上滑）")
+    if re.search(r"下滑|向下滑|下划|向下划|下滚|向下滚|往下滚|向下滚动|滚下来|滚动", t):
+        return ("steps", [{"action": "scroll", "params": {"amount": -50}}], "向下滚动（下滑）")
 
     # 点击 / 鼠标交互（可见可说：说“双击/右键/点击 + 控件名”就直接按名操作，不依赖大模型）
     # 窗口菜单 / 控制菜单 / 系统菜单 -> 打开当前窗口的系统菜单 (Alt+Space)
@@ -202,7 +229,7 @@ def match_simple(text):
     m = re.match(r"^(双击|双点|右键|右击|右点|点击|单击|点一下|单击一下)\s*(.+)$", t)
     if m:
         verb, name = m.group(1), m.group(2).strip()
-        if 0 < len(name) <= 12 and not re.search(r"[，。、？!?；;：:]", name):
+        if 0 < len(name) <= 40 and not re.search(r"[，。、？!?；;：:]", name):
             params = {"name": name}
             if verb in ("双击", "双点"):
                 params["double"] = True
@@ -235,12 +262,6 @@ def match_simple(text):
         return ("steps", [{"action": "move_mouse", "params": {"x": int(m.group(2)), "y": int(m.group(3))}}],
                 f"移动鼠标到 ({m.group(2)}, {m.group(3)})")
 
-    # 滚动
-    if re.search(r"向上滚|往上滚|向上滚动|滚上去", t):
-        return ("steps", [{"action": "scroll", "params": {"amount": 300}}], "向上滚动")
-    if re.search(r"向下滚|往下滚|向下滚动|滚下来|滚动", t):
-        return ("steps", [{"action": "scroll", "params": {"amount": -300}}], "向下滚动")
-
     # 裸「窗口」：在鼠标当前位置点击该窗口（满足“说窗口就点击”的直觉）
     # _from_window_cmd 标记来源，便于结果里提示与「点击窗口」（按名点控件）的区别
     if re.fullmatch(r"(当前|这个|此)?窗口", t) or t in ("窗口", "当前窗口", "这个窗口", "此窗口"):
@@ -264,8 +285,18 @@ def match_simple(text):
         if ("打开" + name) in t or ("访问" + name) in t:
             return ("steps", [{"action": "open_url", "params": {"url": url}}], f"打开 {name}")
 
+    # 打开系统内置应用 / 特殊位置（必须放在“打开文件 <路径>”规则之前，
+    # 否则“打开文件管理器”会被拆成 打开+文件+管理器 当成路径 → WinError 2）
+    m = re.search(
+        r"(打开|启动|运行)\s*"
+        r"(设备管理器|文件管理器|文件资源管理器|资源管理器|我的电脑|此电脑|回收站|控制面板|设置|任务管理器|计算器|画图|终端|命令提示符|命令符)",
+        t,
+    )
+    if m:
+        return ("steps", [{"action": "open_app", "params": {"name": m.group(2)}}], f"打开 {m.group(2)}")
+
     # 打开文件 / 文件夹（含盘符路径，兼容反斜杠与正斜杠）
-    m = re.search(r"(打开|运行)\s*(文件|文件夹|目录)\s*[:：]?\s*(\S+)", t)
+    m = re.search(r"(打开|运行)\s*(文件夹|文件|目录)\s*[:：]?\s*(\S+)", t)
     if m:
         return ("steps", [{"action": "open_file", "params": {"path": m.group(3).strip()}}], f"打开 {m.group(3).strip()}")
     m = re.search(r"(打开|运行)\s*([A-Za-z]:[\\/][^\s，。,]+)", t)

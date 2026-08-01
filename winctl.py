@@ -9,6 +9,7 @@
 不会再出现"未安装 OCR 依赖"这类误报。
 """
 import ctypes
+import time
 
 # 优先尝试 pyautogui；没有就走 ctypes 兜底
 try:
@@ -89,6 +90,13 @@ _RIGHT_DOWN, _RIGHT_UP = 0x0008, 0x0010
 _MIDDLE_DOWN, _MIDDLE_UP = 0x0020, 0x0040
 _WHEEL = 0x0800
 
+# 一个鼠标滚轮刻度 = 120 单位（Windows 约定）；WM_MOUSEWHEEL 的 zDelta 用此为单位。
+WHEEL_DELTA = 120
+# 垂直滚动条样式 / 取窗口样式的索引 / 滚轮消息（用于直接给控件发消息，规避鼠标位置问题）。
+WS_VSCROLL = 0x00200000
+GWL_STYLE = -16
+WM_MOUSEWHEEL = 0x020A
+
 
 def _do_click(button, clicks=1, double=False):
     if button == "right":
@@ -138,12 +146,188 @@ def move(x, y):
 
 
 def scroll(amount):
+    """滚轮：amount 以“鼠标滚轮刻度”为单位（1 刻度 = 120，即一格列）。
+    正数向上滚、负数向下滚。直接走 ctypes mouse_event，避免 pyautogui 把数值当成
+    “原始单位”（之前 scroll(10) 只滚了约 1/12 格，肉眼几乎看不出）。
+    """
     amount = int(amount)
-    if _HAS_PYAUTOGUI:
-        pyautogui.scroll(amount)
-    else:
-        # 一次滚轮 = 120 单位（Windows 约定）
-        _mouse_event(_WHEEL, 0, 0, amount * 120)
+    _mouse_event(_WHEEL, 0, 0, amount * WHEEL_DELTA)
+
+
+def _descendant_windows(hwnd):
+    """递归枚举 hwnd 的所有后代窗口句柄（含直接子窗口与更深层）。"""
+    out = []
+
+    def _enum(child, _lparam):
+        out.append(int(child))
+        EnumChildProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumChildWindows(child, EnumChildProc(_enum), 0)
+        return True
+
+    EnumChildProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumChildWindows(hwnd, EnumChildProc(_enum), 0)
+    return out
+
+
+def _find_scrollable_child(hwnd):
+    """在 hwnd 的所有后代窗口里，挑“主内容区”中那个“带垂直滚动条、可见”的控件。
+    返回其 hwnd；找不到返回 0。
+
+    关键点（经用户实测修正）：文件资源管理器里“左侧导航树”也带垂直滚动条，
+    若按“面积最大”去挑，滚轮会被它抢走、只滚左边。因此：
+    1) 只保留“水平中心落在窗口中线右侧（center_x > 窗口左 + 0.45*宽）”的滚动控件，
+       即排除左侧导航树这类边栏；
+    2) 在剩下的“主内容区”候选里挑面积最大的那个（右侧文件列表）。
+    若筛选后为空（例如 Explorer 右侧内容区 DirectUIHWND 不自报 WS_VSCROLL，
+    只有左侧树自报），则返回 0——交给 scroll_top_window 用“客户区偏右点”兜底，
+    该点落在右侧文件列表上，同样能滚到主内容。
+    """
+    best = 0
+    best_area = 0
+    try:
+        import ctypes.wintypes as wt  # noqa: F401
+        wr = wt.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(wr)):
+            return 0
+        mid_x = wr.left + (wr.right - wr.left) * 0.45
+        for child in _descendant_windows(hwnd):
+            try:
+                style = user32.GetWindowLongW(child, GWL_STYLE)
+                if not (style & WS_VSCROLL):
+                    continue
+                if not user32.IsWindowVisible(child):
+                    continue
+                r = wt.RECT()
+                if not user32.GetWindowRect(child, ctypes.byref(r)):
+                    continue
+                w = r.right - r.left
+                h = r.bottom - r.top
+                if w < 30 or h < 30:  # 过滤掉滚动条等细条控件
+                    continue
+                cx = (r.left + r.right) / 2
+                if cx <= mid_x:  # 排除左侧边栏/导航树，避免滚轮被它抢走
+                    continue
+                area = w * h
+                if area > best_area:
+                    best_area = area
+                    best = child
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return best
+
+
+def scroll_top_window(amount, exclude_pid=None):
+    """在最顶层可见窗口（排除 exclude_pid）上滚动鼠标滚轮。
+
+    实现要点（经实测修正）：
+    - 用“真实鼠标滚轮事件”（mouse_event MOUSEEVENTF_WHEEL）：滚轮消息会按“光标当前位置”
+      投递给光标下的窗口。这是 Explorer / 现代应用都认可的可靠方式。
+      （注：`PostMessage(WM_MOUSEWHEEL)` 对 Explorer 的内容区 DirectUIHWND 常被忽略，不可靠。）
+    - 先把光标移到“最顶层可见窗口（排除本程序自身）”的主内容落点，发真实滚轮，
+      **稍等几十毫秒再恢复光标**，避免滚轮事件被错判回原窗口（之前“滑不了”的根因之一）。
+    - 落点选择：优先“面积最大、带垂直滚动条”的子控件中心（命中主内容区，避开左侧导航树等）；
+      找不到（如 Explorer 的 DirectUIHWND 不自报 WS_VSCROLL）则退到窗口客户区偏右下一点
+      （更可能落在主内容而非标题栏/边栏）。
+    - 顺带把目标窗口提到前台（best-effort：部分应用只在有焦点时才响应滚轮；失败也不影响，
+      滚轮本就按光标位置投递）。
+    返回 (ok: bool, title: str)。
+    """
+    import ctypes.wintypes as wt
+    hwnd = top_visible_window_excluding(exclude_pid)
+    if not hwnd:
+        return (False, "")
+    buf = ctypes.create_unicode_buffer(260)
+    user32.GetWindowTextW(hwnd, buf, 260)
+    title = buf.value.strip()
+
+    z = int(amount) * WHEEL_DELTA  # 正数上滚、负数下滚；1 刻度 = 120
+    try:
+        # 选滚动落点
+        tx, ty = None, None
+        child = _find_scrollable_child(hwnd)
+        if child:
+            r = wt.RECT()
+            if user32.GetWindowRect(child, ctypes.byref(r)):
+                tx = (r.left + r.right) // 2
+                ty = (r.top + r.bottom) // 2
+        if tx is None:
+            r = wt.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                w = r.right - r.left
+                h = r.bottom - r.top
+                # 客户区偏右居中：避开标题栏/左侧导航树，稳稳落在右侧文件列表主内容上
+                tx = r.left + int(w * 0.70)
+                ty = r.top + int(h * 0.50)
+        if tx is None:
+            return (False, title)
+
+        # 记录当前光标与前台窗口，事后尽量恢复（不打扰用户）
+        cur = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(cur))
+        prev_fg = user32.GetForegroundWindow()
+
+        # 尽量把目标提到前台（失败无所谓）
+        try:
+            user32.SetForegroundWindow(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
+        # 真实移动光标到落点 → 发真实滚轮事件 → 稍等 → 恢复光标
+        move(tx, ty)
+        _mouse_event(_WHEEL, 0, 0, z)
+        time.sleep(0.08)
+        move(int(cur.x), int(cur.y))
+        # 尽量把前台还给原来的窗口
+        try:
+            if prev_fg:
+                user32.SetForegroundWindow(prev_fg)
+        except Exception:  # noqa: BLE001
+            pass
+        return (True, title)
+    except Exception:  # noqa: BLE001
+        return (True, title)
+
+
+def navigate_top_window(direction, exclude_pid=None):
+    """对“最顶层可见窗口（排除 exclude_pid）”发送文件管理器导航快捷键。
+
+    direction:
+      'up'      → 向上一级   (Alt+↑)
+      'back'    → 返回/后退  (Alt+←)
+      'forward' → 前进       (Alt+→)
+    这些快捷键只有在目标窗口处于前台时才生效，因此先 best-effort 把它提到前台再发键。
+    找不到其它可见窗口（只有本程序自身）时返回 (False, '')。
+    返回 (ok: bool, title: str)。
+    """
+    _map = {
+        "up": ("alt", "up"),
+        "back": ("alt", "left"),
+        "forward": ("alt", "right"),
+    }
+    if direction not in _map:
+        return (False, "")
+    hwnd = top_visible_window_excluding(exclude_pid)
+    if not hwnd:
+        return (False, "")
+    buf = ctypes.create_unicode_buffer(260)
+    user32.GetWindowTextW(hwnd, buf, 260)
+    title = buf.value.strip()
+    try:
+        # 允许本进程把目标窗口提到前台（系统有时会拦截后台进程置前台）
+        try:
+            user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            user32.SetForegroundWindow(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.05)
+        hotkey(*_map[direction])
+        return (True, title)
+    except Exception:  # noqa: BLE001
+        return (True, title)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +355,15 @@ def hotkey(*keys):
     for vk in reversed(vks):
         if vk:
             user32.keybd_event(vk, 0, 0x0002, 0)
+
+
+def show_desktop():
+    """显示桌面（等价于按下 Win+D）。
+
+    最小化所有窗口、只露出桌面；再次触发可恢复之前的窗口布局。
+    这是系统原生的“显示桌面”切换，不依赖前台窗口是谁，也不会遗漏任何窗口。
+    """
+    hotkey("win", "d")
 
 
 def available():
@@ -315,6 +508,187 @@ def enum_visible_windows(exclude_pid=None):
     EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
     user32.EnumWindows(EnumWindowsProc(_enum), 0)
     return result
+
+
+def top_visible_window_excluding(exclude_pid=None):
+    """返回“最顶层可见窗口”的 hwnd，排除指定进程（通常是本程序自身）。
+
+    - 优先取前台窗口（GetForegroundWindow）；若它是被排除的进程、或不可见/已最小化，
+      则沿 Z 序（GetWindow(GW_HWNDNEXT)）向下找下一个“可见、未最小化、非排除进程”的窗口。
+    - 找不到返回 0。
+
+    用途：关闭/最大化/最小化等指令应作用于用户真正在用的那个顶层窗口，
+    而不是语音控制台自身（用户正在跟它交互时它常是前台窗口）。
+    """
+    import ctypes.wintypes as wt
+    GW_HWNDNEXT = 2
+    excl = int(exclude_pid) if exclude_pid else 0
+
+    def _candidate(hwnd):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return False
+            if user32.IsIconic(hwnd):  # 已最小化：跳过，避免二次最小化/关闭
+                return False
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if excl and p.value == excl:
+                return False
+            r = wt.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return False
+            if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+                return False
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    # 1) 前台窗口优先
+    fg = user32.GetForegroundWindow()
+    if fg and _candidate(fg):
+        return int(fg)
+    # 2) 沿 Z 序向下找（跳过被排除/不可见/最小化的窗口）
+    hwnd = fg if fg else user32.GetWindow(user32.GetDesktopWindow(), GW_HWNDNEXT)
+    seen = 0
+    while hwnd and seen < 1024:
+        seen += 1
+        if _candidate(hwnd):
+            return int(hwnd)
+        hwnd = user32.GetWindow(hwnd, GW_HWNDNEXT)
+    return 0
+
+
+def visible_windows_excluding(exclude_pid=None):
+    """枚举所有“可见、未最小化、非排除进程、有标题、非工具/托盘浮窗”的顶层窗口，
+    按 Z 序（最顶层在前）返回 [(hwnd, title), ...]。
+
+    用途：构建“切换任务窗口”的窗口环，并**排除本程序自身**（语音程序运行窗口/
+    控制台），这样“下一个/上一个窗口”不会在“语音程序 ↔ 其它应用”之间来回跳。
+    """
+    import ctypes.wintypes as wt
+    excl = int(exclude_pid) if exclude_pid else 0
+    GW_OWNER = 4
+    out = []
+    buf = ctypes.create_unicode_buffer(260)
+    cloaked = wt.BOOL(0)
+
+    def _enum(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.IsIconic(hwnd):          # 已最小化：跳过（Alt+Tab 本也不含）
+                return True
+            if user32.GetWindow(hwnd, GW_OWNER):  # -owned 浮窗/工具窗：跳过
+                return True
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if excl and p.value == excl:       # 排除本程序自身
+                return True
+            # 排除 UWP 的 cloaked（隐藏）窗口
+            try:
+                dwm = getattr(user32, "DwmGetWindowAttribute", None)
+                if dwm:
+                    dwm(hwnd, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED=14
+            except Exception:  # noqa: BLE001
+                pass
+            if cloaked.value:
+                return True
+            r = wt.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return True
+            if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+                return True
+            user32.GetWindowTextW(hwnd, buf, 260)
+            title = buf.value.strip()
+            if not title:                      # 无标题栏的窗口（桌面、任务栏等）排除
+                return True
+            out.append((int(hwnd), title))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(EnumWindowsProc(_enum), 0)
+    return out
+
+
+def switch_window(direction="next", exclude_pid=None):
+    """在“可见、未最小化、非本程序”的窗口之间循环切换（等价于智能 Alt+Tab）。
+
+    - direction="next" -> 下一个窗口；direction="prev" -> 上一个窗口。
+    - 优先用 SetForegroundWindow 直接把目标窗口提到前台：这样能**排除本程序自身**，
+      且循环顺序明确可控（不会在“语音程序 ↔ 其它”之间死循环）。
+    - 若系统因“后台进程前台权限”拒绝（SetForegroundWindow 返回 0），则回退到
+      系统原生 Alt+Tab / Alt+Shift+Tab（此时由 Windows 决定环，仍可用）。
+    返回 (ok: bool, title: str)。
+    """
+    wins = visible_windows_excluding(exclude_pid)
+    if not wins:
+        return (False, "")
+    fg = user32.GetForegroundWindow()
+    idx = -1
+    for i, (h, _) in enumerate(wins):
+        if h == fg:
+            idx = i
+            break
+    if direction == "prev":
+        target = wins[(idx - 1) % len(wins)]
+    else:
+        target = wins[(idx + 1) % len(wins)]
+    hwnd, title = target
+    try:
+        try:
+            user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
+        except Exception:  # noqa: BLE001
+            pass
+        ok = bool(user32.SetForegroundWindow(hwnd))
+    except Exception:  # noqa: BLE001
+        ok = False
+    if not ok:
+        # 系统拒绝后台置前台：回退原生任务切换（此时由 Windows 管理窗口环）
+        if direction == "prev":
+            hotkey("alt", "shift", "tab")
+        else:
+            hotkey("alt", "tab")
+    return (True, title)
+
+
+def control_top_window(action, exclude_pid=None):
+    """对“最顶层可见窗口（排除 exclude_pid）”执行窗口操作。
+
+    action: 'minimize' | 'maximize' | 'restore' | 'close'
+    返回 (ok: bool, title: str)。title 为被操作窗口标题，便于反馈给用户。
+
+    直接基于窗口句柄操作（ShowWindow / PostMessage WM_CLOSE），
+    不依赖“前台窗口恰好是谁”，因此即使语音控制台自身在前台也不会误伤自己。
+    """
+    import ctypes.wintypes as wt
+    SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE = 6, 3, 9
+    WM_CLOSE = 0x0010
+    _cmds = {"minimize": SW_MINIMIZE, "maximize": SW_MAXIMIZE, "restore": SW_RESTORE}
+
+    hwnd = top_visible_window_excluding(exclude_pid)
+    if not hwnd:
+        return (False, "")
+    buf = ctypes.create_unicode_buffer(260)
+    user32.GetWindowTextW(hwnd, buf, 260)
+    title = buf.value.strip()
+
+    if action in _cmds:
+        ok = bool(user32.ShowWindow(hwnd, _cmds[action]))
+        return (ok, title)
+    if action == "close":
+        ok = bool(user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+        if not ok:
+            # 兜底：把窗口提到前台后用 Alt+F4（极少数应用忽略 PostMessage WM_CLOSE）
+            try:
+                user32.SetForegroundWindow(hwnd)
+            except Exception:  # noqa: BLE001
+                pass
+            hotkey("alt", "f4")
+            ok = True
+        return (ok, title)
+    return (False, title)
 
 
 def process_name_by_pid(pid):

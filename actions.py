@@ -92,8 +92,17 @@ APP_ALIASES = {
     "terminal": "wt",
     "windows terminal": "wt",
     "文件资源管理器": "explorer",
+    "文件管理器": "explorer",
     "资源管理器": "explorer",
     "explorer": "explorer",
+    "我的电脑": "explorer",
+    "此电脑": "explorer",
+    "设备管理器": "devmgmt.msc",
+    "回收站": "shell:RecycleBinFolder",
+    "服务": "services.msc",
+    "注册表": "regedit",
+    "计算机管理": "compmgmt.msc",
+    "磁盘管理": "diskmgmt.msc",
     "控制面板": "control",
     "设置": "ms-settings:",
     "任务管理器": "taskmgr",
@@ -119,8 +128,9 @@ def _open_app(params):
         return "未指定应用名"
     exe = APP_ALIASES.get(name.lower(), name)
     try:
-        # Windows 的 start 命令可以靠应用名/协议启动
-        subprocess.Popen(f'start "" "{exe}"', shell=True)
+        # os.startfile 用 ShellExecute：支持 .msc / shell: / ::{...} / 应用名，
+        # 且失败时只抛异常（由 except 返回文本），不会弹出系统“找不到文件”对话框
+        os.startfile(exe)
         return f"已打开：{name}"
     except Exception as e:  # noqa: BLE001
         return f"打开 {name} 失败：{e}"
@@ -228,12 +238,12 @@ def _double_click(params):
     x, y = params.get("x"), params.get("y")
     try:
         if x is not None and y is not None:
-            winctl.doubleClick(int(x), int(y))
+            winctl.double_click(int(x), int(y))
             return f"已双击 ({x}, {y})"
         cx, cy, wname, is_self = _cursor_click_context()
         if is_self:
             return _SELF_HOVER_TIP
-        winctl.doubleClick()
+        winctl.double_click()
         where = f"，窗口「{wname}」" if wname else ""
         return f"已双击（鼠标当前位置 ({cx},{cy}){where}）"
     except Exception as e:  # noqa: BLE001
@@ -244,12 +254,12 @@ def _right_click(params):
     x, y = params.get("x"), params.get("y")
     try:
         if x is not None and y is not None:
-            winctl.rightClick(int(x), int(y))
+            winctl.right_click(int(x), int(y))
             return f"已右键点击 ({x}, {y})"
         cx, cy, wname, is_self = _cursor_click_context()
         if is_self:
             return _SELF_HOVER_TIP
-        winctl.rightClick()
+        winctl.right_click()
         where = f"，窗口「{wname}」" if wname else ""
         return f"已右键点击（鼠标当前位置 ({cx},{cy}){where}）"
     except Exception as e:  # noqa: BLE001
@@ -261,7 +271,7 @@ def _move_mouse(params):
     if x is None or y is None:
         return "move_mouse 需要 x, y 坐标"
     try:
-        winctl.moveTo(int(x), int(y))
+        winctl.move(int(x), int(y))
         return f"已移动鼠标到 ({x}, {y})"
     except Exception as e:  # noqa: BLE001
         return f"移动失败：{e}"
@@ -270,8 +280,13 @@ def _move_mouse(params):
 def _scroll(params):
     amount = int(params.get("amount", 0))
     try:
+        ok, title = winctl.scroll_top_window(amount, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "当前窗口"
+            return f"已在「{where}」上滚动 {amount}（滚轮刻度）"
+        # 没有其它可见窗口（只有语音控制台自身）：回退到当前鼠标位置滚动
         winctl.scroll(amount)
-        return f"已滚动 {amount}"
+        return f"已滚动 {amount}（未找到其它可见窗口，按当前鼠标位置滚动）"
     except Exception as e:  # noqa: BLE001
         return f"滚动失败：{e}"
 
@@ -310,29 +325,78 @@ def _lock_screen(params):
 
 
 def _minimize_active(params):
-    winctl.hotkey("win", "down")
-    return "已最小化当前窗口"
+    # 作用于“最顶层可见窗口（排除本程序自身）”，而不是语音控制台自己
+    ok, title = winctl.control_top_window("minimize", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可最小化的窗口（前台没有其它可见窗口）"
+    return f"已最小化窗口：{title or '（无标题窗口）'}"
 
 
 def _maximize_active(params):
-    winctl.hotkey("win", "up")
-    return "已最大化当前窗口"
+    ok, title = winctl.control_top_window("maximize", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可最大化的窗口（前台没有其它可见窗口）"
+    return f"已最大化窗口：{title or '（无标题窗口）'}"
 
 
 def _close_active(params):
-    winctl.hotkey("alt", "f4")
-    return "已关闭当前窗口"
+    ok, title = winctl.control_top_window("close", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可关闭的窗口（前台没有其它可见窗口）"
+    return f"已关闭窗口：{title or '（无标题窗口）'}"
 
 
 def _switch_window(params):
-    winctl.hotkey("alt", "tab")
-    return "已切换窗口"
+    # 在“可见、非最小化、非本程序”的窗口间循环切换：下一个 / 上一个。
+    # 排除本程序自身，避免“语音程序 ↔ 其它应用”之间死循环。
+    direction = params.get("direction", "next")
+    try:
+        ok, title = winctl.switch_window(direction, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "窗口"
+            label = "上一个" if direction == "prev" else "下一个"
+            return f"已切换到{label}窗口：{where}"
+        return "没有可切换的窗口（当前只有本程序在前台）"
+    except Exception as e:  # noqa: BLE001
+        return f"切换窗口失败：{e}"
 
 
 def _restore_active(params):
-    # Win+↓：最大化时还原为窗口，普通窗口时最小化；这里用作“还原窗口”
-    winctl.hotkey("win", "down")
-    return "已还原窗口"
+    # 还原最顶层可见窗口（排除本程序自身）为正常大小
+    ok, title = winctl.control_top_window("restore", exclude_pid=_SELF_PID)
+    if not ok:
+        return "没有可还原的窗口（前台没有其它可见窗口）"
+    return f"已还原窗口：{title or '（无标题窗口）'}"
+
+
+def _show_desktop(params):
+    # 显示桌面：最小化所有窗口、只露出桌面（等价于 Win+D）。
+    # 再次触发可恢复之前的窗口布局，由系统原生处理，不依赖前台窗口是谁。
+    try:
+        winctl.show_desktop()
+        return "已回到桌面（其它窗口已最小化）"
+    except Exception as e:  # noqa: BLE001
+        return f"回到桌面失败：{e}"
+
+
+def _explorer_nav(params):
+    # 文件管理器导航：向上一级 (Alt+↑) / 返回·后退 (Alt+←) / 前进 (Alt+→)。
+    # 定向到“最顶层可见窗口（排除本程序自身）”，确保键发到资源管理器/浏览器本身，
+    # 而不是说指令时处于前台的语音控制台。
+    direction = (params.get("direction") or "").strip()
+    _labels = {
+        "up": "向上一级 (Alt+↑)",
+        "back": "返回/后退 (Alt+←)",
+        "forward": "前进 (Alt+→)",
+    }
+    try:
+        ok, title = winctl.navigate_top_window(direction, exclude_pid=_SELF_PID)
+        if ok:
+            where = title or "当前窗口"
+            return f"已在「{where}」执行：{_labels.get(direction, direction)}"
+        return "没有可导航的窗口（前台没有其它可见窗口）"
+    except Exception as e:  # noqa: BLE001
+        return f"导航失败：{e}"
 
 
 def _click_by_name_ocr(params, preview=False):
@@ -961,6 +1025,8 @@ ACTION_HANDLERS = {
     "maximize_active": _maximize_active,
     "restore_active": _restore_active,
     "close_active": _close_active,
+    "show_desktop": _show_desktop,
+    "explorer_nav": _explorer_nav,
     "switch_window": _switch_window,
     "click_by_name": _click_by_name,
     "double_click": _double_click,
