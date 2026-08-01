@@ -9,7 +9,22 @@
 不会再出现"未安装 OCR 依赖"这类误报。
 """
 import ctypes
+import os
 import time
+
+
+def _ensure_libs_on_path():
+    """把项目自带的 libs/ 目录加入模块搜索路径（便携部署：Pillow 等随项目携带）。"""
+    try:
+        import sys
+        libs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
+        if os.path.isdir(libs) and libs not in sys.path:
+            sys.path.insert(0, libs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_ensure_libs_on_path()
 
 # 优先尝试 pyautogui；没有就走 ctypes 兜底
 try:
@@ -612,6 +627,246 @@ def visible_windows_excluding(exclude_pid=None):
     return out
 
 
+def _taskbar_running_buttons(exclude_keywords=()):
+    """读取任务栏「正在运行的应用」按钮（Win11 TaskListButtonAutomationPeer），
+    按屏幕 x 顺序（=任务栏视觉顺序）返回 [(app_name, uia_control)]。
+
+    仅保留“运行中”的应用（按钮名形如「App - N 个运行窗口 [已固定]」），
+    仅固定未运行的图标不在内。exclude_keywords: 应用名含任一关键词则排除（如本程序自身）。
+    """
+    import re as _re
+    try:
+        import uiautomation as auto
+    except Exception:  # noqa: BLE001
+        return []
+    hwnd = user32.FindWindowW("Shell_TrayWnd", None)
+    if not hwnd:
+        return []
+    try:
+        root = auto.ControlFromHandle(hwnd)
+    except Exception:  # noqa: BLE001
+        return []
+    found = []
+
+    def _walk(c, depth=0):
+        if depth > 12:
+            return
+        try:
+            if "TaskListButton" in (getattr(c, "ClassName", "") or ""):
+                nm = (c.Name or "").strip()
+                m = _re.match(r"^(.*?)\s*-\s*\d+\s*个运行窗口", nm)
+                if m:
+                    app = m.group(1).strip()
+                    if app and not any(k in app for k in exclude_keywords):
+                        try:
+                            left = c.BoundingRectangle.left
+                        except Exception:  # noqa: BLE001
+                            left = 0
+                        found.append((left, app, c))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for ch in c.GetChildren():
+                _walk(ch, depth + 1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    _walk(root)
+    found.sort(key=lambda t: t[0])
+    return [(app, c) for _l, app, c in found]
+
+
+def switch_taskbar_app(direction="next", exclude_keywords=()):
+    """在任务栏运行中的应用间循环切换（等价于按顺序点击任务栏图标）。
+
+    与旧的 Z 序窗口环的区别：
+    - 候选集 = 任务栏上“正在运行”的应用（和 Alt+Tab/用户视觉一致，无 shell/浮窗杂质）；
+    - 顺序 = 任务栏视觉顺序（x 坐标），激活窗口不改变按钮顺序 -> 连发指令稳定循环，
+      不会像 Z 序环那样在两个窗口间来回弹跳；
+    - 切换方式 = Invoke 任务栏按钮本身（与手动点图标一致，自动还原最小化窗口）。
+    返回 (ok, 目标应用名/错误描述)；读不到任务栏按钮时返回 (False, "") 供调用方回退。
+    """
+    btns = _taskbar_running_buttons(exclude_keywords)
+    if not btns:
+        return (False, "")
+    # 定位当前前台应用：先按窗口标题包含应用名匹配，再按进程名包含匹配
+    idx = -1
+    try:
+        import ctypes.wintypes as wt
+        fg = user32.GetForegroundWindow()
+        buf = ctypes.create_unicode_buffer(260)
+        user32.GetWindowTextW(fg, buf, 260)
+        fg_title = buf.value.strip()
+        p = wt.DWORD()
+        user32.GetWindowThreadProcessId(fg, ctypes.byref(p))
+        pname = process_name_by_pid(p.value).lower()
+        for i, (app, _c) in enumerate(btns):
+            if app and (app in fg_title or fg_title in app):
+                idx = i
+                break
+        if idx < 0 and pname:
+            for i, (app, _c) in enumerate(btns):
+                a = app.lower().replace(" ", "")
+                if a and (a in pname or pname.replace(".exe", "") in a):
+                    idx = i
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+def _find_window_for_app(app):
+    """按任务栏应用名找它的顶层窗口句柄（含最小化窗口）。
+
+    匹配优先级：标题完全相等 > 标题包含应用名 > 进程名包含；
+    同分按 Z 序（EnumWindows 顺序）取最靠前者。找不到返回 0。
+    """
+    import ctypes.wintypes as wt
+    found = []  # (score, z序位置, hwnd)
+
+    def _enum(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.GetWindow(hwnd, 4):  # GW_OWNER：跳过浮窗/工具窗
+                return True
+            buf = ctypes.create_unicode_buffer(260)
+            user32.GetWindowTextW(hwnd, buf, 260)
+            title = buf.value.strip()
+            if not title:
+                return True
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            pname = process_name_by_pid(p.value).lower()
+            score = 0
+            if title == app:
+                score = 3
+            elif app and app in title:
+                score = 2
+            else:
+                a = app.lower().replace(" ", "")
+                # 注意：pname 为空（高权限进程 OpenProcess 被拒）时绝不能做包含匹配，
+                # 否则 '' in a 恒真，任何高权限窗口都会“匹配”任意应用名
+                if a and pname and (a in pname or pname.replace(".exe", "") in a):
+                    score = 1
+            if score:
+                found.append((score, len(found), int(hwnd)))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(EnumWindowsProc(_enum), 0)
+    if not found:
+        return 0
+    found.sort(key=lambda t: (-t[0], t[1]))
+    return found[0][2]
+
+
+def _activate_hwnd(hwnd):
+    """把窗口提到前台（最小化先还原）。返回是否成功。"""
+    try:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return bool(user32.SetForegroundWindow(hwnd))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def switch_taskbar_app(direction="next", exclude_keywords=()):
+    """在任务栏运行中的应用间循环切换（等价于按顺序点击任务栏图标）。
+
+    与旧的 Z 序窗口环的区别：
+    - 候选集 = 任务栏上“正在运行”的应用（和 Alt+Tab/用户视觉一致，无 shell/浮窗杂质）；
+    - 顺序 = 任务栏视觉顺序（x 坐标），激活窗口不改变按钮顺序 -> 连发指令稳定循环，
+      不会像 Z 序环那样在两个窗口间来回弹跳；
+    - 激活方式 = 按应用名定位窗口句柄后 SetForegroundWindow（不受“管理员权限窗口
+      在前台时注入输入被系统拦截”的影响）；找不到窗口才回退真实点击任务栏按钮
+      （注入式输入在高权限前台下会被拦截，仅作兜底）。
+    返回 (ok, 目标应用名/错误描述)；读不到任务栏按钮时返回 (False, "") 供调用方回退。
+    """
+    btns = _taskbar_running_buttons(exclude_keywords)
+    if not btns:
+        return (False, "")
+    # 定位当前前台应用：先按窗口标题包含应用名匹配，再按进程名包含匹配
+    idx = -1
+    try:
+        import ctypes.wintypes as wt
+        fg = user32.GetForegroundWindow()
+        buf = ctypes.create_unicode_buffer(260)
+        user32.GetWindowTextW(fg, buf, 260)
+        fg_title = buf.value.strip()
+        p = wt.DWORD()
+        user32.GetWindowThreadProcessId(fg, ctypes.byref(p))
+        pname = process_name_by_pid(p.value).lower()
+        for i, (app, _c) in enumerate(btns):
+            if app and (app in fg_title or fg_title in app):
+                idx = i
+                break
+        if idx < 0 and pname:
+            for i, (app, _c) in enumerate(btns):
+                a = app.lower().replace(" ", "")
+                if a and (a in pname or pname.replace(".exe", "") in a):
+                    idx = i
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    step = -1 if direction == "prev" else 1
+    # 前台不在任务栏（如桌面/控制台自身/弹窗对话框）：next 从第一个开始，prev 从最后一个开始
+    target_idx = (idx + step) % len(btns) if idx >= 0 else (0 if step > 0 else len(btns) - 1)
+    app, ctrl = btns[target_idx]
+
+    def _fg_title():
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            user32.GetWindowTextW(user32.GetForegroundWindow(), buf, 260)
+            return buf.value.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    # 优先：按应用名定位窗口并置前台（不走注入输入，一般场景最稳）
+    hwnd = _find_window_for_app(app)
+    if hwnd:
+        _activate_hwnd(hwnd)
+        time.sleep(0.2)
+        if user32.GetForegroundWindow() == hwnd:
+            return (True, app)
+        # 没切过去：先查是不是“管理员权限窗口占着前台”这道硬墙
+        fg_now = user32.GetForegroundWindow()
+        if fg_now and fg_now != hwnd and is_elevated_window(fg_now):
+            return (False, f"已定位到「{app}」的窗口，但当前前台是管理员权限窗口"
+                           f"「{_fg_title() or '未知'}」——Windows 安全限制下程序无法自动切走，"
+                           f"请手动点一下任务栏（或以管理员身份运行语音控制台）。")
+
+    # 兜底：真实鼠标点击任务栏按钮（注入输入；高权限前台下会被系统拦截，点完要验证）
+    try:
+        import ctypes.wintypes as wt
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        ctrl.Click()
+        try:
+            user32.SetCursorPos(pt.x, pt.y)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
+        # 验证前台确实切到了目标应用（防止“点了没反应还报成功”）
+        if hwnd and user32.GetForegroundWindow() == hwnd:
+            return (True, app)
+        if app and app in _fg_title():
+            return (True, app)
+        fg_now = user32.GetForegroundWindow()
+        if fg_now and is_elevated_window(fg_now):
+            return (False, f"当前前台是管理员权限窗口「{_fg_title() or '未知'}」，"
+                           f"Windows 安全限制下无法自动切走，请手动切一次窗口。")
+        return (False, f"{app}（点击后前台未切换）")
+    except Exception as e:  # noqa: BLE001
+        return (False, f"{app}（点击任务栏按钮失败：{e}）")
+
+
 def switch_window(direction="next", exclude_pid=None):
     """在“可见、未最小化、非本程序”的窗口之间循环切换（等价于智能 Alt+Tab）。
 
@@ -692,14 +947,16 @@ def control_top_window(action, exclude_pid=None):
 
 
 def process_name_by_pid(pid):
-    """根据进程 PID 返回进程映像名（如 notepad.exe）。失败返回空串。"""
+    """根据进程 PID 返回进程映像名（如 notepad.exe）。失败返回空串。
+
+    使用 PROCESS_QUERY_LIMITED_INFORMATION：中权限进程也能打开高权限进程
+    查询基本信息（0x0400 会被拒绝），设备管理器等管理员程序也能拿到名字。
+    """
     try:
         import ctypes.wintypes as wt
         kernel32 = ctypes.windll.kernel32
         psapi = ctypes.windll.psapi
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_VM_READ = 0x0010
-        h = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
+        h = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
             return ""
         try:
@@ -709,5 +966,29 @@ def process_name_by_pid(pid):
             return ""
         finally:
             kernel32.CloseHandle(h)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def is_elevated_window(hwnd):
+    """窗口进程是否可能是高权限（管理员）运行。
+
+    判定：用 PROCESS_QUERY_INFORMATION(0x0400) 打不开该进程即视为高权限
+    （中权限进程查询高权限进程会被拒）。用于“切换窗口失败时给出准确原因”。
+    """
+    try:
+        import ctypes.wintypes as wt
+        p = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+        if not p.value:
+            return False
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.OpenProcess(0x0400, False, int(p.value))
+        if h:
+            kernel32.CloseHandle(h)
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
     except Exception:  # noqa: BLE001
         return ""

@@ -49,3 +49,6 @@ Thumbs.db
 
 # ── WorkBuddy workspace data (memory/logs, not source) ──
 .workbuddy/
+
+# ── Vendored OCR python libs (portable payload, not source) ──
+libs/

@@ -9,6 +9,24 @@ import subprocess
 import time
 import webbrowser
 
+
+def _ensure_libs_on_path():
+    """把项目自带的 libs/ 目录加入模块搜索路径。
+
+    便携部署：OCR 依赖（pytesseract/Pillow）已随项目放在 libs/ 下，
+    目标电脑无需 pip install，整个目录拷走即可用。
+    """
+    try:
+        import sys
+        libs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs")
+        if os.path.isdir(libs) and libs not in sys.path:
+            sys.path.insert(0, libs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_ensure_libs_on_path()
+
 import winctl
 import pyperclip
 
@@ -347,15 +365,20 @@ def _close_active(params):
 
 
 def _switch_window(params):
-    # 在“可见、非最小化、非本程序”的窗口间循环切换：下一个 / 上一个。
-    # 排除本程序自身，避免“语音程序 ↔ 其它应用”之间死循环。
+    # 在任务栏运行中的应用间循环切换（下一个/上一个）。
+    # 候选集和顺序都以任务栏为准：激活不改变任务栏顺序，连发指令稳定循环；
+    # 读不到任务栏按钮时回退旧的 Z 序窗口环。
     direction = params.get("direction", "next")
+    label = "上一个" if direction == "prev" else "下一个"
     try:
-        ok, title = winctl.switch_window(direction, exclude_pid=_SELF_PID)
+        ok, name = winctl.switch_taskbar_app(direction, exclude_keywords=_SELF_TITLE_KEYWORDS)
         if ok:
-            where = title or "窗口"
-            label = "上一个" if direction == "prev" else "下一个"
-            return f"已切换到{label}窗口：{where}"
+            return f"已切换到{label}任务栏应用：{name}"
+        if name:  # 读到按钮但 Invoke 失败
+            return f"切换{label}任务栏应用失败：{name}"
+        ok2, title = winctl.switch_window(direction, exclude_pid=_SELF_PID)
+        if ok2:
+            return f"已切换到{label}窗口：{title or '窗口'}"
         return "没有可切换的窗口（当前只有本程序在前台）"
     except Exception as e:  # noqa: BLE001
         return f"切换窗口失败：{e}"

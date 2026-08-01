@@ -6,7 +6,7 @@
   "speech_rate": 170,
   "language": "zh-CN",
   "confirm_destructive": true,
-  "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+  "tesseract_path": "",
   "http_control": {
     "enabled": true,
     "port": 8765,
