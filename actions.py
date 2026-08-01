@@ -422,6 +422,124 @@ def _explorer_nav(params):
         return f"导航失败：{e}"
 
 
+def _find_named_item(win, name):
+    """在窗口 UIA 树里按名找最佳匹配控件（评分规则与 _click_by_name 一致）。
+    返回 (ctrl, label) 或 None。供「进入目录」等需要“先定位再操作”的动作复用。
+
+    注意：本函数只依赖控件对象的 Name / ControlTypeName / GetChildren 属性，
+    不依赖 uiautomation 模块本身，因此可在无该库的环境下做纯逻辑测试。
+    """
+    collected = []
+    def _collect(c, depth=0, limit=25):
+        if depth > limit:
+            return
+        try:
+            label = (c.Name or "").strip()
+        except Exception:  # noqa: BLE001
+            label = ""
+        if label:
+            collected.append((c, label))
+        try:
+            for ch in c.GetChildren():
+                _collect(ch, depth + 1, limit)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        _collect(win)
+    except Exception:  # noqa: BLE001
+        pass
+    _ACTIONABLE = ("ListItem", "Button", "MenuItem", "TreeItem", "Hyperlink",
+                   "TabItem", "CheckBox", "RadioButton", "ComboBox", "SplitButton")
+    def _rank(ctrl):
+        try:
+            ct = getattr(ctrl, "ControlTypeName", "") or str(getattr(ctrl, "ControlType", "") or "")
+        except Exception:  # noqa: BLE001
+            return 1
+        return 0 if any(k in ct for k in _ACTIONABLE) else 1
+    def _score(item):
+        ctrl, label = item
+        tr = _rank(ctrl)
+        if label == name:
+            return (0, tr, len(label))
+        if name in label:
+            return (1, tr, len(label))
+        if len(label) >= 2 and label in name:
+            return (2, tr, -len(label))
+        return None
+    best, best_score = None, None
+    for item in collected:
+        s = _score(item)
+        if s is None:
+            continue
+        if best_score is None or s < best_score:
+            best_score, best = s, item
+    return best
+
+
+def _enter_folder(params):
+    """进入文件管理器里的目录：选中同名项并回车打开。
+
+    比「双击 UIA 控件」更可靠——资源管理器「详细信息」视图的 ListItem 是横跨
+    整行的宽行，uiautomation 的 DoubleClick 默认点整行中心（修改日期列），
+    双击那里不会打开文件夹。改用「单击选中 + 回车」由资源管理器自身打开选中项。
+    """
+    name = (params.get("name") or "").strip()
+    if not name:
+        return "未指定要进入的目录名"
+    try:
+        import uiautomation as auto
+    except Exception:  # noqa: BLE001
+        return "未安装 uiautomation"
+    try:
+        auto.SetGlobalSearchTimeout(3)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 目标窗口：前台若是资源管理器优先用之；否则枚举可见的 explorer.exe 窗口
+    wins = []
+    try:
+        fg = auto.GetForegroundControl()
+        fg_win = fg.GetTopLevelControl()
+        if fg_win is not None and not _is_self_window(fg_win):
+            wins.append(fg_win)
+    except Exception:  # noqa: BLE001
+        pass
+    if not wins:
+        for w, _, title, _h, pid, pname in _list_visible_windows(auto):
+            if pname and "explorer" in pname.lower():
+                wins.append(w)
+    if not wins:
+        return "进入目录需在文件资源管理器窗口中使用（未检测到已打开的资源管理器）"
+
+    for win in wins:
+        item = _find_named_item(win, name)
+        if not item:
+            continue
+        target, found_label = item
+        # 先把资源管理器提到前台，再选中该项并发回车打开（回车一定作用于选中项）
+        try:
+            hwnd = win.NativeWindowHandle
+            winctl._activate_hwnd(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.08)
+        try:
+            target.SetFocus()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            target.Click()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.1)
+        try:
+            winctl.press("enter")
+        except Exception:  # noqa: BLE001
+            pass
+        return f"已进入目录「{found_label}」（若没打开，请确认它是文件夹而非文件）"
+    return f"在资源管理器中未找到名为「{name}」的项"
+
+
 def _click_by_name_ocr(params, preview=False):
     """
     OCR 模式：截取当前窗口画面，识别屏上真实文字，按坐标点击。
@@ -1077,6 +1195,7 @@ ACTION_HANDLERS = {
     "close_active": _close_active,
     "show_desktop": _show_desktop,
     "explorer_nav": _explorer_nav,
+    "enter_folder": _enter_folder,
     "switch_window": _switch_window,
     "click_by_name": _click_by_name,
     "double_click": _double_click,

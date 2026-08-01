@@ -20,6 +20,21 @@
            font-size: 14px; background: #3b82f6; color: #fff; }
   button:hover { background: #2563eb; }
   button.ghost { background: #334155; }
+  button.mic { background: #0d9488; user-select: none; -webkit-user-select: none;
+               touch-action: none; -webkit-touch-callout: none; }
+  button.mic:hover { background: #0f766e; }
+  button.mic.big { flex: 1; padding: 18px 16px; font-size: 18px; border-radius: 12px; }
+  button.mic.rec { background: #dc2626; animation: micpulse 1s infinite; }
+  button.gear { padding: 10px 13px; flex-shrink: 0; font-size: 16px; }
+  @keyframes micpulse { 50% { opacity: .6; } }
+  .michint { font-size: 12px; color: #94a3b8; margin: -4px 0 8px; min-height: 15px;
+             line-height: 1.5; }
+  .michint.err { color: #f87171; }
+  .asr-cfg { background: #111827; border: 1px solid #1f2937; border-radius: 10px;
+             padding: 10px 14px; margin: 0 0 14px; font-size: 13px; color: #cbd5e1; }
+  .asr-cfg label { display: block; margin-bottom: 6px; color: #94a3b8; font-size: 12.5px; }
+  #asrUrl { flex: 1; background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: 8px; padding: 9px 10px; font-size: 13px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
   .chip { background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
           border-radius: 999px; padding: 7px 13px; font-size: 13px; cursor: pointer; }
@@ -58,6 +73,21 @@
     <button onclick="send()">发送</button>
   </div>
 
+  <div class="row">
+    <button id="micBtn" class="mic big" title="按住开始识别，松开结束（FunASR 流式识别）">🎤 按住说话</button>
+    <button id="asrCfgBtn" class="ghost gear" title="识别服务设置">⚙</button>
+  </div>
+  <div class="michint" id="micHint"></div>
+
+  <div class="asr-cfg" id="asrCfg" style="display:none">
+    <label>识别服务地址（默认走本服务器中转，无需手机再信任 FunASR 证书；可改为直连 wss:// 地址）</label>
+    <div class="row">
+      <input id="asrUrl" placeholder="wss://192.168.0.103:8443/asr">
+      <button onclick="saveAsrUrl()">保存</button>
+      <button class="ghost" onclick="resetAsrUrl()">默认（本服务器中转）</button>
+    </div>
+  </div>
+
   <details class="api">
     <summary>🔌 HTTP 接口调用方式（点击展开：curl / Python 示例，可集成到脚本 / 其它程序）</summary>
     <p class="api-hint">服务器地址：<code id="apiBase">（自动检测）</code><br>
@@ -86,8 +116,7 @@
              ? location.origin : "";
   if (BASE) document.getElementById("base").value = BASE;
 
-  var QUICK = ["编辑","保存","复制","粘贴","撤销","双击编辑","右键发送",
-               "回收站","截图","锁屏","最小化窗口","关闭当前窗口","打开记事本","帮助"];
+  var QUICK = ["最小化窗口","关闭当前窗口","向上","向下","向左","向右","回退","回车","Tab","Esc","打开记事本","打开浏览器"];
 
   var chipsEl = document.getElementById("chips");
   QUICK.forEach(function (q) {
@@ -165,6 +194,207 @@
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
     });
   }
+
+  // ================= 按住说话（FunASR 流式识别） =================
+  // 默认走「本服务器中转」：wss://<当前主机>:8767/asr（与控制页同证书），
+  // 这样手机只需信任控制页那一张证书即可，无需再单独信任 FunASR 的自签名证书。
+  // 如需直连 FunASR（例如与控制页同机的场景），可在⚙里改成 wss://... 直接地址。
+  var ASR_WS_DEFAULT = (location.protocol === "https:" ? "wss://" : "ws://")
+                       + location.hostname + ":8767/asr";
+  var HTTPS_PORT = "8766";
+  var micBtn = document.getElementById("micBtn");
+  var micHint = document.getElementById("micHint");
+  var asr = null;  // {ws, ctx, proc, stream, committed, interim, opened, stopping}
+
+  // 识别服务地址：本浏览器 localStorage 持久化，未设置时用默认值
+  var asrUrl = localStorage.getItem("asr_ws_url") || ASR_WS_DEFAULT;
+  document.getElementById("asrUrl").value = asrUrl;
+  document.getElementById("asrCfgBtn").onclick = function () {
+    var el = document.getElementById("asrCfg");
+    el.style.display = (el.style.display === "none") ? "block" : "none";
+  };
+  function saveAsrUrl() {
+    var v = document.getElementById("asrUrl").value.trim();
+    if (!/^wss?:\/\/.+/.test(v)) { micStatus("地址需以 ws:// 或 wss:// 开头", true); return; }
+    asrUrl = v;
+    localStorage.setItem("asr_ws_url", v);
+    document.getElementById("asrCfg").style.display = "none";
+    micStatus("识别服务地址已保存：" + v);
+  }
+  function resetAsrUrl() {
+    asrUrl = ASR_WS_DEFAULT;
+    document.getElementById("asrUrl").value = ASR_WS_DEFAULT;
+    localStorage.removeItem("asr_ws_url");
+    micStatus("已恢复默认地址：" + ASR_WS_DEFAULT);
+  }
+
+  function micStatus(msg, isErr) {
+    micHint.textContent = msg || "";
+    micHint.className = "michint" + (isErr ? " err" : "");
+  }
+
+  // 浏览器采集的一般是 44.1k/48k float32，FunASR 需要 16kHz int16 PCM
+  function downsampleBuf(f32, fromRate, toRate) {
+    if (fromRate === toRate) return f32;
+    var ratio = fromRate / toRate;
+    var newLen = Math.floor(f32.length / ratio);
+    var out = new Float32Array(newLen);
+    var pos = 0, offset = 0;
+    while (pos < newLen) {
+      var next = Math.min(Math.round((pos + 1) * ratio), f32.length);
+      var sum = 0, cnt = 0;
+      for (var i = offset; i < next; i++) { sum += f32[i]; cnt++; }
+      out[pos++] = cnt ? sum / cnt : 0;
+      offset = next;
+    }
+    return out;
+  }
+
+  function f32ToPcm16(f32) {
+    var buf = new ArrayBuffer(f32.length * 2);
+    var dv = new DataView(buf);
+    for (var i = 0; i < f32.length; i++) {
+      var s = Math.max(-1, Math.min(1, f32[i]));
+      dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buf;
+  }
+
+  function micResetBtn() {
+    micBtn.classList.remove("rec");
+    micBtn.textContent = "🎤 按住说话";
+  }
+
+  // 去掉识别文本末尾的句末标点（FunASR 每段结果会自动补一个「。」/「.」，语音指令用不到）
+  function stripEndPunct(s) {
+    return (s || "").replace(/[。.．\s]+$/g, "");
+  }
+
+  function asrStart(e) {
+    if (e) e.preventDefault();
+    if (asr) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      micStatus("当前是 HTTP 页面，浏览器禁止用麦克风。请改用 https://" +
+                location.hostname + ":" + HTTPS_PORT +
+                " 打开（自签名证书，首次点“高级 → 继续访问”）。", true);
+      return;
+    }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { micStatus("此浏览器不支持音频采集", true); return; }
+    // 关键：必须在用户手势（pointerdown）内创建并恢复 AudioContext、并发起 getUserMedia，
+    // 否则 iOS/Android 会拒绝麦克风授权（NotAllowedError）或 AudioContext 处于 suspended 而无声。
+    var ctx = new AC();
+    var proc = ctx.createScriptProcessor(4096, 1, 1);
+    asr = { ws: null, ctx: ctx, proc: proc, stream: null,
+            committed: "", interim: "", opened: false, stopping: false };
+    if (ctx.resume) { try { ctx.resume(); } catch (e) {} }
+
+    // 在手势内同步发起麦克风授权（iOS 必须于按下手势内调用，否则 NotAllowedError）
+    navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    }).then(function (stream) {
+      if (!asr || asr.ctx !== ctx) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      asr.stream = stream;
+      var src = ctx.createMediaStreamSource(stream);
+      proc.onaudioprocess = function (ev) {
+        if (!asr || !asr.ws || asr.ws.readyState !== 1) return;
+        var ds = downsampleBuf(ev.inputBuffer.getChannelData(0), ctx.sampleRate, 16000);
+        asr.ws.send(f32ToPcm16(ds));
+      };
+      src.connect(proc);
+      proc.connect(ctx.destination);
+      micBtn.classList.add("rec");
+      micBtn.textContent = "● 识别中…松开结束";
+      micStatus("正在识别，请说话…");
+    }).catch(function (err) {
+      micStatus("无法使用麦克风：" + err.name + "（iOS 须用 https 页面且于本次按下手势内授权；检查浏览器麦克风权限）", true);
+      asrStop(true);
+    });
+
+    // 同时建立与识别服务的连接（同主机中转或直连）
+    var ws;
+    try { ws = new WebSocket(asrUrl); }
+    catch (err) { micStatus("识别服务地址无效：" + err, true); return; }
+    asr.ws = ws;
+    ws.onopen = function () {
+      if (!asr || asr.ws !== ws) { try { ws.close(); } catch (e) {} return; }
+      asr.opened = true;
+      asr.errored = false;
+      ws.send(JSON.stringify({ mode: "2pass", chunk_size: [5, 10, 5], chunk_interval: 10,
+                               wav_name: "web_mic", is_speaking: true }));
+    };
+
+    ws.onmessage = function (ev) {
+      if (!asr || asr.ws !== ws) return;
+      try {
+        var m = JSON.parse(ev.data);
+        var t = (m.text || "").trim();
+        if (!t) return;
+        var mode = m.mode || "";
+        if (m.is_final === true || mode.indexOf("offline") >= 0) {
+          asr.committed += stripEndPunct(t);
+          asr.interim = "";
+        } else {
+          asr.interim = stripEndPunct(t);
+        }
+        document.getElementById("cmd").value = asr.committed + asr.interim;
+      } catch (err) {}
+    };
+
+    ws.onerror = function () {
+      // 真正的失败原因在 onclose 里区分（onclose 紧随 onerror 触发）
+      if (asr) asr.errored = true;
+    };
+
+    ws.onclose = function (ev) {
+      if (!asr || asr.ws !== ws) return;
+      document.getElementById("cmd").value = asr.committed + asr.interim;
+      if (!asr.stopping) {
+        if (!asr.opened) {
+          // 从未连上：多半是中转端口没起来（控制台未重启 / 8767 被防火墙拦截）
+          micStatus("连不上识别服务 " + asrUrl +
+                    "：连接被拒绝或无响应——多半是控制台未重启（中转端口 8767 未监听）" +
+                    "或被防火墙拦截。请确认已重启控制台，并放行 8767 端口过 Windows 防火墙。", true);
+        } else {
+          // 已连上中转，但被后端断开：说明 FunASR 后端(配置 asr_ws_url)不可达
+          var reason = (ev && ev.reason) ? ("（" + ev.reason + "）") : "";
+          micStatus("已连上本机中转，但与 FunASR 后端断开" + reason +
+                    "：后端未启动或不可达。请在浏览器打开 https://" + location.hostname +
+                    ":8767/health（注意是 https，不是 http）查看后端连通性；" +
+                    "或检查配置 http_control.asr_ws_url 是否正确。", true);
+        }
+      }
+      asr = null;
+      micResetBtn();
+    };
+  }
+
+  function asrStop(silent) {
+    if (!asr) return;
+    var a = asr;
+    a.stopping = true;
+    try { if (a.proc) a.proc.disconnect(); } catch (e) {}
+    try { if (a.ctx) a.ctx.close(); } catch (e) {}
+    try { if (a.stream) a.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    micResetBtn();
+    try {
+      if (a.opened && a.ws.readyState === 1) {
+        a.ws.send(JSON.stringify({ is_speaking: false }));
+        setTimeout(function () {
+          try { a.ws.close(); } catch (e) {}
+        }, 800);
+      } else {
+        document.getElementById("cmd").value = a.committed + a.interim;
+        asr = null;
+      }
+    } catch (e) { asr = null; }
+    if (!silent) micStatus("识别结束，内容已放入输入框。");
+  }
+
+  micBtn.addEventListener("pointerdown", asrStart);
+  micBtn.addEventListener("pointerup", function () { asrStop(false); });
+  micBtn.addEventListener("pointercancel", function () { asrStop(false); });
+  micBtn.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
   // 初次拉取 + 定时刷新
   fillExamples();

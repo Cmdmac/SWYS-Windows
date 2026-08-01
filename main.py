@@ -436,10 +436,13 @@ class VoiceControlApp:
         messagebox.showinfo("使用帮助", HELP_TEXT)
 
     # ---------------- 局域网控制 ----------------
-    def show_http_url(self, lan_ip, port):
+    def show_http_url(self, lan_ip, port, https_port=None):
         self.http_port = port
         msg = (f"🌐 局域网控制已开启：http://{lan_ip}:{port}  "
                f"（手机或其它电脑浏览器打开即可发指令；本机也可访问 http://127.0.0.1:{port}；点「🌐」查看接口调用方式）")
+        if https_port:
+            msg += (f"\n🎤 按住说话（麦克风）入口：https://{lan_ip}:{https_port}  "
+                    f"（自签名证书，首次打开点「高级 → 继续访问」即可）")
         self.status.configure(text=msg)
         self._append("log", msg)
 
@@ -641,9 +644,9 @@ def _run_main():
         hcfg = app.cfg.get("http_control", {}) or {}
         if hcfg.get("enabled", True):
             port = int(hcfg.get("port", 8765))
-            start_server(app, host="0.0.0.0", port=port)
+            srv = start_server(app, host="0.0.0.0", port=port)
             lan = get_lan_ip()
-            app.show_http_url(lan, port)
+            app.show_http_url(lan, port, https_port=getattr(srv, "https_port", None))
     except Exception as e:  # noqa: BLE001
         app._append("err", f"HTTP 局域网控制服务启动失败：{e}")
 

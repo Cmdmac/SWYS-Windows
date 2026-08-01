@@ -20,12 +20,30 @@ DEFAULT_CONFIG = {
         "enabled": True,                         # 是否开启
         "port": 8765,                            # 监听端口
         "allow_destructive": False,              # 是否允许局域网触发关机/重启/睡眠等危险操作
+        "https_enabled": True,                   # 同时开启 HTTPS（自签名证书，页面「按住说话」的麦克风需要 HTTPS 页面）
+        "https_port": 8766,                      # HTTPS 监听端口
+        "asr_proxy_port": 8767,                  # ASR WebSocket 中转端口（与控制页同证书，手机只信任这一张证书即可）
+        "asr_ws_url": "wss://192.168.0.103:8443/asr",  # FunASR 语音识别服务地址（作为中转后端；页面默认经本服务器 :8767 中转，无需手机再信任此证书）
     },
     "tray": {                                    # 系统托盘
         "enabled": True,                         # 是否启用托盘图标
         "start_minimized": False,                # 启动后直接最小化到托盘（点图标可打开窗口）；False=启动即显示窗口
     },
 }
+
+
+def _deep_merge(default, user):
+    """深度合并两个字典：user 中存在的键覆盖 default，不存在的键保留 default。
+    对嵌套 dict 递归合并，避免顶层 update 把 http_control / tray 等整段冲掉。"""
+    result = dict(default)
+    if not isinstance(user, dict):
+        return result
+    for key, value in user.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def load_config():
@@ -38,7 +56,7 @@ def load_config():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 user_cfg = json.load(f)
             if isinstance(user_cfg, dict):
-                cfg.update(user_cfg)
+                cfg = _deep_merge(cfg, user_cfg)
         except Exception:
             pass
     return cfg

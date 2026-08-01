@@ -12,6 +12,7 @@ Pillow>=10.0.0         # 截图兜底（winctl 用 ImageGrab）
 uiautomation>=2.0.10   # 按控件名点击（可见可说核心）
 pytesseract>=0.3.10    # OCR 按屏幕文字点击（需另装 Tesseract 引擎，见下）
 pystray>=0.19.0        # 系统托盘图标（Windows 上自动依赖 pywin32，纯 wheel 安装）
+cryptography>=42.0.0   # 生成自签名证书（局域网控制页 HTTPS，「按住说话」的麦克风需要）
 
 # ---- 可选：麦克风语音输入（🎤）----
 # pyaudio 仅用于麦克风采集。未安装时程序自动降级（🎤 提示不可用），不影响其它功能。

@@ -101,6 +101,16 @@ GENERIC_ACTIONS = {
     "关闭文件": (["ctrl", "w"], "关闭 (Ctrl+W)"),
     # 浏览 / 视图
     "刷新": (["f5"], "刷新 (F5)"),
+    # 方向键 / 控制键（发到当前焦点窗口；语音或快捷指令均可）
+    "向上": (["up"], "向上（↑）"),
+    "向下": (["down"], "向下（↓）"),
+    "向左": (["left"], "向左（←）"),
+    "向右": (["right"], "向右（→）"),
+    "回退": (["backspace"], "回退（退格键）"),
+    "Tab": (["tab"], "Tab"),
+    "tab": (["tab"], "Tab"),
+    "Esc": (["esc"], "Esc"),
+    "esc": (["esc"], "Esc"),
     # 注意：「后退/前进」已移到下方“文件管理器导航”专用路由（explorer_nav），
     # 它会定向到“最顶层可见窗口”而不是当前前台窗口，避免键发到语音控制台自身。
     # 注意：「编辑/文件/视图/格式/工具」等菜单名不在此处——
@@ -162,6 +172,10 @@ def match_simple(text):
     if "睡眠" in t or "休眠" in t or "sleep" in tl:
         return ("steps", [{"action": "sleep", "params": {}}], "让电脑睡眠")
 
+    # 回车（在输入框 / 对话框里按 Enter 确认；如登录、提交、确认操作）
+    if "回车" in t or "按回车" in t or "回车键" in t or "enter" in tl:
+        return ("steps", [{"action": "press_keys", "params": {"keys": ["enter"]}}], "回车（确认）")
+
     # 音量
     if "静音" in t or "mute" in tl:
         return ("steps", [{"action": "volume_mute", "params": {}}], "切换静音")
@@ -211,8 +225,8 @@ def match_simple(text):
         if name and not re.search(r"[，。！？!?；;]", name):
             if re.search(r"^[A-Za-z]:[\\/]", name) or re.search(r"[\\/]", name):
                 return ("steps", [{"action": "open_file", "params": {"path": name}}], f"进入目录 {name}")
-            return ("steps", [{"action": "click_by_name", "params": {"name": name, "double": True}}],
-                    f"进入目录（双击文件夹「{name}」）")
+            return ("steps", [{"action": "enter_folder", "params": {"name": name}}],
+                    f"进入目录（在文件资源管理器选中并回车打开「{name}」）")
 
     # 鼠标滚动（上滑 / 下滑）：amount 为正=向上滚，为负=向下滚（单位：鼠标滚轮刻度，1 刻度=120）
     # 兼容语音识别把“滑(huá)”误写成同音字“划(huá)”的情况
