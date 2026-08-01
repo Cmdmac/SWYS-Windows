@@ -242,8 +242,9 @@ def match_simple(text):
         return ("steps", [{"action": "scroll", "params": {"amount": -300}}], "向下滚动")
 
     # 裸「窗口」：在鼠标当前位置点击该窗口（满足“说窗口就点击”的直觉）
+    # _from_window_cmd 标记来源，便于结果里提示与「点击窗口」（按名点控件）的区别
     if re.fullmatch(r"(当前|这个|此)?窗口", t) or t in ("窗口", "当前窗口", "这个窗口", "此窗口"):
-        return ("steps", [{"action": "click", "params": {}}], "点击（鼠标当前位置的窗口）")
+        return ("steps", [{"action": "click", "params": {"_from_window_cmd": True}}], "点击（鼠标当前位置的窗口）")
 
     # 输入文本
     m = re.search(r"(输入|打字|键入|填入)\s*[:：]?\s*(.+)", t)

@@ -37,6 +37,10 @@ def build_mock(focus_ctrl, desktop_children, direct_hit=None):
 
 import actions
 
+# 让测试不依赖真实屏幕内容：OCR 兜底固定返回失败桩
+# （否则装了 Tesseract 后，测试 3/5 会对真实屏幕做 OCR，结果随屏幕内容变化）
+actions._click_by_name_ocr = lambda *a, **k: "OCR 识别失败（测试桩）"
+
 # 1) 演练模式：找得到但不点
 tb=Ctrl('输入框',ctype='Edit',handle=1); btn=Ctrl('发送',ctype='Button',handle=1)
 win=Ctrl('窗口',[tb,btn],ctype='Window',handle=1)

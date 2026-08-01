@@ -247,6 +247,29 @@ def window_title_at(x, y):
     return buf.value.strip()
 
 
+def cursor_pos():
+    """返回鼠标当前位置 (x, y)（逻辑屏幕坐标，与 SetCursorPos/click 同一坐标系）。"""
+    import ctypes.wintypes as wt
+    pt = wt.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    return int(pt.x), int(pt.y)
+
+
+def window_pid_at(x, y):
+    """返回屏幕坐标 (x,y) 处窗口所属的进程 PID（0 表示取不到）。
+
+    用于判断“鼠标正悬停在哪个程序的窗口上”，比如避免点击落在本程序自己身上。
+    """
+    import ctypes.wintypes as wt
+    pt = wt.POINT(int(x), int(y))
+    hwnd = user32.WindowFromPoint(pt)
+    if not hwnd:
+        return 0
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
 def point_in_rects(x, y, rects):
     """判断点 (x,y) 是否落在任一矩形 (l,t,r,b) 内。"""
     for l, t, r, b in rects:

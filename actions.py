@@ -176,14 +176,50 @@ def _press_keys(params):
         return f"按键失败：{e}"
 
 
+def _cursor_click_context():
+    """读取鼠标当前位置与下方窗口信息，返回 (cx, cy, 窗口标题, 是否本程序自身)。
+
+    用于“点击鼠标当前位置”类动作的执行前反馈——让“点了哪里”可见，
+    并拦截“鼠标悬停在控制台自己身上”的无效点击（发指令的动作会把鼠标拉到控制台）。
+    """
+    cx, cy, wname, is_self = 0, 0, "", False
+    try:
+        cx, cy = winctl.cursor_pos()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        is_self = (winctl.window_pid_at(cx, cy) == _SELF_PID)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        wname = winctl.window_title_at(cx, cy)
+    except Exception:  # noqa: BLE001
+        pass
+    return cx, cy, wname, is_self
+
+
+_SELF_HOVER_TIP = ("未点击：鼠标正悬停在「语音控制台」自己身上，点它没有意义。\n"
+                   "把鼠标移到目标窗口上再发指令；在控制台里发指令会把鼠标拉到控制台，"
+                   "建议改用手机/局域网控制页发，PC 上的鼠标位置就不会动。")
+
+
 def _click(params):
     x, y = params.get("x"), params.get("y")
     try:
         if x is not None and y is not None:
             winctl.click(int(x), int(y))
             return f"已点击 ({x}, {y})"
-        winctl.click()  # 未给坐标 -> 点击鼠标当前位置
-        return "已点击（鼠标当前位置）"
+        # 未给坐标 -> 点击鼠标当前位置：先确认点在什么窗口上，避免“点了没反应”说不清
+        cx, cy, wname, is_self = _cursor_click_context()
+        if is_self:
+            return _SELF_HOVER_TIP
+        winctl.click()
+        where = f"，窗口「{wname}」" if wname else ""
+        hint = ""
+        if params.get("_from_window_cmd"):
+            hint = ("\n（这是点在鼠标悬停的位置；如果你想点的是名为「窗口」的菜单/控件，"
+                    "比如 WorkBuddy 的「窗口」菜单，请改说「点击窗口」）")
+        return f"已点击（鼠标当前位置 ({cx},{cy}){where}）{hint}"
     except Exception as e:  # noqa: BLE001
         return f"点击失败：{e}"
 
@@ -194,8 +230,12 @@ def _double_click(params):
         if x is not None and y is not None:
             winctl.doubleClick(int(x), int(y))
             return f"已双击 ({x}, {y})"
+        cx, cy, wname, is_self = _cursor_click_context()
+        if is_self:
+            return _SELF_HOVER_TIP
         winctl.doubleClick()
-        return "已双击（鼠标当前位置）"
+        where = f"，窗口「{wname}」" if wname else ""
+        return f"已双击（鼠标当前位置 ({cx},{cy}){where}）"
     except Exception as e:  # noqa: BLE001
         return f"双击失败：{e}"
 
@@ -206,8 +246,12 @@ def _right_click(params):
         if x is not None and y is not None:
             winctl.rightClick(int(x), int(y))
             return f"已右键点击 ({x}, {y})"
+        cx, cy, wname, is_self = _cursor_click_context()
+        if is_self:
+            return _SELF_HOVER_TIP
         winctl.rightClick()
-        return "已右键点击（鼠标当前位置）"
+        where = f"，窗口「{wname}」" if wname else ""
+        return f"已右键点击（鼠标当前位置 ({cx},{cy}){where}）"
     except Exception as e:  # noqa: BLE001
         return f"右键点击失败：{e}"
 
@@ -389,15 +433,6 @@ def _click_by_name_ocr(params, preview=False):
                 return 0
             return 0
 
-        try:
-            try:
-                data = pytesseract.image_to_data(img, lang="chi_sim+eng", output_type=pytesseract.Output.DICT)
-            except Exception:  # noqa: BLE001
-                data = pytesseract.image_to_data(img, lang="chi_sim", output_type=pytesseract.Output.DICT)
-        except Exception as e:  # noqa: BLE001
-            return (f"OCR 识别失败（请确认 Tesseract-OCR 引擎已就位且含 chi_sim）：{e}\n"
-                    f"当前引擎路径：{getattr(pytesseract.pytesseract, 'tesseract_cmd', '默认使用 PATH')}")
-
         # DPI 换算：ImageGrab 截的是物理像素，而 GetSystemMetrics/SetCursorPos 用逻辑像素。
         # 按“截图尺寸 / 虚拟屏幕逻辑尺寸”求得缩放比，把图像像素坐标换算回逻辑屏幕坐标。
         try:
@@ -412,70 +447,107 @@ def _click_by_name_ocr(params, preview=False):
         def _is_cjk(ch):
             return "一" <= ch <= "鿿"
 
-        entries = []
-        buf = []  # 连续单字 CJK 的索引
-        toks = data.get("text", [])
-
-        def _flush_buf():
-            if len(buf) >= 2:
-                ls = [int(data["left"][k]) for k in buf]
-                ts = [int(data["top"][k]) for k in buf]
-                rs = [int(data["left"][k]) + int(data["width"][k]) for k in buf]
-                bs = [int(data["top"][k]) + int(data["height"][k]) for k in buf]
-                entries.append({
-                    "text": "".join((data["text"][k] or "").strip() for k in buf),
-                    "left": min(ls), "top": min(ts),
-                    "width": max(rs) - min(ls), "height": max(bs) - min(ts),
-                    "conf": sum(float(data["conf"][k]) for k in buf) / len(buf),
-                })
-
-        for i, raw in enumerate(toks):
-            t = (raw or "").strip()
-            if not t:
-                _flush_buf(); buf = []
-                continue
-            if len(t) == 1 and _is_cjk(t[0]):
-                if buf:
-                    # 与上一个单字横向间距过大则先收尾，避免跨词误合并
-                    prev_r = int(data["left"][buf[-1]]) + int(data["width"][buf[-1]])
-                    gap = int(data["left"][i]) - prev_r
-                    if gap > int(data["height"][i]) * 0.8:
-                        _flush_buf(); buf = []
-                buf.append(i)
-            else:
-                _flush_buf(); buf = []
-                entries.append({
-                    "text": t, "left": int(data["left"][i]), "top": int(data["top"][i]),
-                    "width": int(data["width"][i]), "height": int(data["height"][i]),
-                    "conf": float(data["conf"][i]),
-                })
-        _flush_buf()
-
-        best = None
-        for e in entries:
-            t = (e["text"] or "").strip()
-            if not t:
-                continue
-            sc = _score(name, t)
-            if sc <= 0:
-                continue
-            # 图像像素坐标（用于调试截图绘制）
-            px = int(e["left"]) + int(e["width"]) / 2
-            py = int(e["top"]) + int(e["height"]) / 2
-            # 换算为逻辑屏幕坐标（点击用）
-            sx = int(round(oleft + px / _scale_x))
-            sy = int(round(otop + py / _scale_y))
-            # 命中落在本程序自身窗口内 -> 跳过（只点程序外的目标）
-            if self_rects and winctl.point_in_rects(sx, sy, self_rects):
-                continue
+        # 整屏 OCR 分两遍：先 PSM 3（自动版面分析，常规 UI 文字质量最好）；
+        # 未命中再兜底 PSM 12（稀疏文本 + OSD）。任务栏天气/小组件等小块、浅色、
+        # 图标旁的文字会被自动版面整版漏检，只有稀疏模式能检出
+        #（实测：任务栏「多云」仅 PSM 12 命中，拆成「多」「云」但置信度 90+，
+        #  经 CJK 单字合并后即为精确匹配）。
+        def _ocr_pass(psm):
             try:
-                conf = float(e["conf"])
+                try:
+                    data = pytesseract.image_to_data(img, lang="chi_sim+eng", config=f"--psm {psm}",
+                                                     output_type=pytesseract.Output.DICT)
+                except Exception:  # noqa: BLE001
+                    data = pytesseract.image_to_data(img, lang="chi_sim", config=f"--psm {psm}",
+                                                     output_type=pytesseract.Output.DICT)
             except Exception:  # noqa: BLE001
-                conf = 0
-            lx = int(e["left"]); ty = int(e["top"])
-            w = int(e["width"]); h = int(e["height"])
-            if best is None or sc > best[0] or (sc == best[0] and conf > best[1]):
-                best = (sc, conf, sx, sy, t, lx, ty, w, h, px, py)
+                raise  # 引擎级错误（未安装/语言包缺失），交给外层统一报错
+
+            entries = []
+            buf = []  # 连续单字 CJK 的索引
+            toks = data.get("text", [])
+
+            def _flush_buf():
+                if len(buf) >= 2:
+                    ls = [int(data["left"][k]) for k in buf]
+                    ts = [int(data["top"][k]) for k in buf]
+                    rs = [int(data["left"][k]) + int(data["width"][k]) for k in buf]
+                    bs = [int(data["top"][k]) + int(data["height"][k]) for k in buf]
+                    entries.append({
+                        "text": "".join((data["text"][k] or "").strip() for k in buf),
+                        "left": min(ls), "top": min(ts),
+                        "width": max(rs) - min(ls), "height": max(bs) - min(ts),
+                        "conf": sum(float(data["conf"][k]) for k in buf) / len(buf),
+                    })
+
+            for i, raw in enumerate(toks):
+                t = (raw or "").strip()
+                if not t:
+                    _flush_buf(); buf = []
+                    continue
+                if len(t) == 1 and _is_cjk(t[0]):
+                    if buf:
+                        # 与上一个单字横向间距过大则先收尾，避免跨词误合并
+                        prev_r = int(data["left"][buf[-1]]) + int(data["width"][buf[-1]])
+                        gap = int(data["left"][i]) - prev_r
+                        if gap > int(data["height"][i]) * 0.8:
+                            _flush_buf(); buf = []
+                    buf.append(i)
+                else:
+                    _flush_buf(); buf = []
+                    entries.append({
+                        "text": t, "left": int(data["left"][i]), "top": int(data["top"][i]),
+                        "width": int(data["width"][i]), "height": int(data["height"][i]),
+                        "conf": float(data["conf"][i]),
+                    })
+            _flush_buf()
+
+            best = None
+            for e in entries:
+                t = (e["text"] or "").strip()
+                if not t:
+                    continue
+                sc = _score(name, t)
+                if sc <= 0:
+                    continue
+                # 图像像素坐标（用于调试截图绘制）
+                px = int(e["left"]) + int(e["width"]) / 2
+                py = int(e["top"]) + int(e["height"]) / 2
+                # 换算为逻辑屏幕坐标（点击用）
+                sx = int(round(oleft + px / _scale_x))
+                sy = int(round(otop + py / _scale_y))
+                # 命中落在本程序自身窗口内 -> 跳过（只点程序外的目标）
+                if self_rects and winctl.point_in_rects(sx, sy, self_rects):
+                    continue
+                try:
+                    conf = float(e["conf"])
+                except Exception:  # noqa: BLE001
+                    conf = 0
+                lx = int(e["left"]); ty = int(e["top"])
+                w = int(e["width"]); h = int(e["height"])
+                if best is None or sc > best[0] or (sc == best[0] and conf > best[1]):
+                    best = (sc, conf, sx, sy, t, lx, ty, w, h, px, py)
+            return best
+
+        try:
+            best = _ocr_pass(3)
+        except Exception as e:  # noqa: BLE001
+            return (f"OCR 识别失败（请确认 Tesseract-OCR 引擎已就位且含 chi_sim）：{e}\n"
+                    f"当前引擎路径：{getattr(pytesseract.pytesseract, 'tesseract_cmd', '默认使用 PATH')}")
+
+        sparse_note = ""
+        # 第一遍没有精确命中时，再用稀疏模式兜底（小块/浅色文字仅稀疏模式可检出）；
+        # 两遍取全局最优（分数优先，同分取置信度高）——避免第一遍的弱匹配
+        # 挡住第二遍的精确匹配（如聊天记录里的「多云;」挡住任务栏的「多云」）。
+        if best is None or best[0] < 100:
+            try:
+                best2 = _ocr_pass(12)
+            except Exception:  # noqa: BLE001
+                best2 = None  # 第一遍已正常跑完，兜底遍引擎异常按无第二遍处理
+            if best2 is not None:
+                if best is None or best2[0] > best[0] or (best2[0] == best[0] and best2[1] > best[1]):
+                    best = best2
+                    sparse_note = "（稀疏文本模式命中）"
 
         if best is None:
             covered_note = ""
@@ -516,7 +588,7 @@ def _click_by_name_ocr(params, preview=False):
         kind = "精确" if sc >= 100 else ("子串" if sc >= 60 else "片段")
         if preview:
             _act = "双击" if double else ("右键" if right else "单击")
-            return (f"【演练】将{_act}「{t}」（{kind}匹配，置信度 {conf:.0f}）\n"
+            return (f"【演练】将{_act}「{t}」（{kind}匹配，置信度 {conf:.0f}）{sparse_note}\n"
                     f"→ 屏幕坐标 ({ix},{iy})，窗口「{window_name or '可见窗口'}」{dbg_note}")
         try:
             if right:
@@ -532,7 +604,7 @@ def _click_by_name_ocr(params, preview=False):
             note = "\n（注：这是按片段模糊匹配，若点了没反应，可能命中了非按钮的文字标签）"
         _suffix = "（右键）" if right else ("（双击）" if double else "")
         return (f"已点击「{t}」@ 屏幕坐标 ({ix},{iy})，窗口「{window_name or '可见窗口'}」"
-                f"（{kind}匹配，置信度 {conf:.0f}）{_suffix}{note}{dbg_note}")
+                f"（{kind}匹配，置信度 {conf:.0f}）{sparse_note}{_suffix}{note}{dbg_note}")
     except Exception as e:  # noqa: BLE001
         return f"OCR 点击失败：{e}"
 
@@ -933,7 +1005,7 @@ def execute_steps(steps, log, dry_run=False):
                 log(f"[步骤{i}] {msg}")
                 results.append(msg)
                 continue
-            preview = ", ".join(f"{k}={v}" for k, v in params.items()) if params else "（无参数）"
+            preview = ", ".join(f"{k}={v}" for k, v in params.items() if not str(k).startswith("_")) or "（无参数）"
             msg = f"【演练】将执行 {action} ({preview})"
             log(f"[步骤{i}] {msg}")
             results.append(msg)
