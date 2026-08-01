@@ -905,63 +905,90 @@ def _click_by_name(params):
                     f"OCR 尝试：{tip}{traversed_note}\n"
                     f"（若控件没暴露可访问名称，已用 OCR 在整屏扫描文字；确认目标文字可见、未被遮挡、非图标/图片按钮）")
 
-        # 选最佳：精确 > 名称含关键词 > 关键词含短名；
-        # 前两档同档取名字最短（最贴近），反向包含档取名字最长（重叠越多越具体）
+        # 选最佳：匹配档（精确 > 名称含关键词 > 关键词含短名）> 控件可操作性 > 名称长度。
+        # 控件类型必须参与排序：资源管理器的「详细信息窗格」会暴露与列表项
+        # 完全同名同分的 Text/Group 元素（点那里就是“点到右边详细信息”），
+        # 必须让真正可操作的 ListItem/Button 等赢下平局。
+        _ACTIONABLE_TYPES = ("ListItem", "Button", "MenuItem", "TreeItem", "Hyperlink",
+                             "TabItem", "CheckBox", "RadioButton", "ComboBox", "SplitButton")
+
+        def _type_rank(ctrl):
+            try:
+                ct = getattr(ctrl, "ControlTypeName", "") or str(getattr(ctrl, "ControlType", "") or "")
+            except Exception:  # noqa: BLE001
+                return 1
+            return 0 if any(k in ct for k in _ACTIONABLE_TYPES) else 1
+
         def _score(item):
-            _, label = item
+            ctrl, label = item
+            tr = _type_rank(ctrl)
             if label == name:
-                return (0, len(label))
+                return (0, tr, len(label))
             if name in label:
-                return (1, len(label))
-            return (2, -len(label))
+                return (1, tr, len(label))
+            # 反向包含档：控件名越长与关键词重叠越多，优先取更具体的
+            return (2, tr, -len(label))
+
+        def _click_offsets(tgt):
+            """宽行控件的点击偏移 (ox, oy)：取第一个有面积子元素的中心。
+
+            资源管理器「详细信息」视图把整行（名称+修改日期+类型+大小四列）暴露为
+            一个宽 ListItem（实测 747x31），几何中心落在「修改日期」列上——
+            双击那里不会打开文件夹。此时改点第一个子元素（名称列）的中心。
+            普通控件返回 None（仍点几何中心）。
+            """
+            try:
+                r = tgt.BoundingRectangle
+                w, h = r.width(), r.height()
+            except Exception:  # noqa: BLE001
+                return None
+            if not (w and h and w > max(h * 4, 200)):
+                return None
+            try:
+                for ch in tgt.GetChildren():
+                    try:
+                        cr = ch.BoundingRectangle
+                        cw, chh = cr.width(), cr.height()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if cw > 0 and chh > 0:
+                        ox = min(max(int(cr.left + cw / 2 - r.left), 4), w - 4)
+                        oy = min(max(int(cr.top + chh / 2 - r.top), 2), h - 2)
+                        return (ox, oy)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
 
         candidates.sort(key=_score)
         target, found_label = candidates[0]
+        offsets = _click_offsets(target)
+        _col_note = "，宽行改点名称列" if offsets else ""
         if preview:
             _kind = "双击" if double else ("右键" if right else "单击")
-            return f"【演练】将{_kind}控件：{found_label}（{scope}）"
+            return f"【演练】将{_kind}控件：{found_label}（{scope}{_col_note}）"
         try:
             target.SetFocus()
         except Exception:  # noqa: BLE001
             pass
         _suffix = "（右键）" if right else ("（双击）" if double else "")
-
-        def _mouse_click():
-            """真实鼠标点击控件中心（不依赖控件挂事件）。"""
-            if right:
-                target.ClickByMouse(button="right")
-            elif double:
-                target.DoubleClickByMouse()
-            else:
-                target.ClickByMouse()
-
         try:
-            # 优先用控件自身的高层方法（Click/DoubleClick/RightClick，走 UIA Invoke），
-            # 缺失则回退到鼠标事件；默认单击。
-            if right:
-                if hasattr(target, "RightClick"):
-                    target.RightClick()
-                else:
-                    target.ClickByMouse(button="right")
-            elif double:
-                if hasattr(target, "DoubleClick"):
-                    target.DoubleClick()
-                else:
-                    target.DoubleClickByMouse()
+            # 本机 uiautomation 版本的 Click/DoubleClick/RightClick 都是鼠标点击
+            # （支持相对控件左上角的偏移参数），宽行用偏移点名称列
+            fn = getattr(target, "RightClick" if right else ("DoubleClick" if double else "Click"))
+            if offsets:
+                fn(*offsets)
             else:
-                if hasattr(target, "Click"):
-                    target.Click()
-                else:
-                    target.ClickByMouse()
+                fn()
         except Exception as e:  # noqa: BLE001
-            # Invoke 失败（典型：0x80040201 事件无订户——静态文本/未挂事件的控件）
-            # -> 回退真实鼠标点击控件中心再试一次
+            # 兜底：老版本库的 ClickByMouse 系列方法（本机版本没有这些方法）
             try:
-                _mouse_click()
+                alt = getattr(target, "RightClickByMouse" if right
+                              else ("DoubleClickByMouse" if double else "ClickByMouse"))
+                alt()
                 return f"已点击控件：{found_label}（{scope}，鼠标兜底）{_suffix}"
             except Exception as e2:  # noqa: BLE001
                 return f"找到控件「{found_label}」但点击失败：{e}；鼠标兜底也失败：{e2}"
-        return f"已点击控件：{found_label}（{scope}）{_suffix}"
+        return f"已点击控件：{found_label}（{scope}{_col_note}）{_suffix}"
     except Exception as e:  # noqa: BLE001
         return f"按名称点击失败：{e}"
 

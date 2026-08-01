@@ -202,6 +202,18 @@ def match_simple(text):
     if re.search(r"前进|前进一步|下一页", t):
         return ("steps", [{"action": "explorer_nav", "params": {"direction": "forward"}}], "前进（Alt+→）")
 
+    # 进入目录（文件管理器场景）：「进入工作」「进入目录 工作」「进入 D:\work」
+    # 名称形式 -> 双击屏上同名文件夹项（click_by_name double，含类型优先/宽行改点优化）；
+    # 路径形式（含盘符或路径分隔符）-> 直接打开该路径。
+    m = re.match(r"^(进入|进到)\s*(目录|文件夹)?\s*[:：]?\s*(.+)$", t)
+    if m:
+        name = m.group(3).strip().strip("。，,")
+        if name and not re.search(r"[，。！？!?；;]", name):
+            if re.search(r"^[A-Za-z]:[\\/]", name) or re.search(r"[\\/]", name):
+                return ("steps", [{"action": "open_file", "params": {"path": name}}], f"进入目录 {name}")
+            return ("steps", [{"action": "click_by_name", "params": {"name": name, "double": True}}],
+                    f"进入目录（双击文件夹「{name}」）")
+
     # 鼠标滚动（上滑 / 下滑）：amount 为正=向上滚，为负=向下滚（单位：鼠标滚轮刻度，1 刻度=120）
     # 兼容语音识别把“滑(huá)”误写成同音字“划(huá)”的情况
     if re.search(r"上滑|向上滑|上划|向上划|上滚|向上滚|往上滚|向上滚动|滚上去", t):

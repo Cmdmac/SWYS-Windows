@@ -119,4 +119,40 @@ hwnds8 = [w[3] for w in wins8]
 print('控制页窗口排除:', hwnds8, '(应只含 101)')
 assert hwnds8 == [101]
 
+# 9) 宽行控件（资源管理器详细视图行）：双击改点名称列中心，而非整行几何中心（会落到日期列）
+class R2:
+    """模拟真实 uiautomation Rect：width/height 是方法（mock 的 Rect 是属性）"""
+    def __init__(self, l, t, r, b): self.left,self.top,self.right,self.bottom=l,t,r,b
+    def width(self): return self.right-self.left
+    def height(self): return self.bottom-self.top
+
+class WideCtrl(Ctrl):
+    def __init__(self, name, rect, children=None, ctype='ListItem'):
+        super().__init__(name, children, ctype=ctype, handle=1)
+        self._rect2 = rect
+        self.dbl_args = None
+    @property
+    def BoundingRectangle(self): return self._rect2
+    def DoubleClick(self, *a):
+        self.dbl_args = a
+        self.clicked = True
+
+row = WideCtrl('工作', R2(1383,627,2130,658), [WideCtrl('名称', R2(1411,631,1705,655))])
+win9=Ctrl('窗口9',[row],ctype='Window',handle=1)
+build_mock(row,[win9])
+r=actions._click_by_name({'name':'工作','double':True})
+# 名称列中心(1558,643) - 行左上(1383,627) = 偏移(175,16)
+print('宽行改点名称列:', r, '| DoubleClick args=', row.dbl_args, '(应为(175,16))')
+assert row.clicked and row.dbl_args == (175, 16) and '宽行改点名称列' in r
+
+# 10) 同名时「可操作控件类型」优先：详情窗格的 Text/Group 不应赢过真正的 ListItem
+c_txt = Ctrl('工作', ctype='Text', handle=1)
+c_grp = Ctrl('工作', ctype='Group', handle=1)
+c_li  = Ctrl('工作', ctype='ListItem', handle=1)
+win10 = Ctrl('窗口10', [c_txt, c_grp, c_li], ctype='Window', handle=1)  # Text 在前（模拟 DFS 先遇到）
+build_mock(c_txt, [win10])
+r = actions._click_by_name({'name': '工作'})
+print('类型优先    :', r, '| ListItem.clicked=', c_li.clicked, '| Text.clicked=', c_txt.clicked, '(应 True/False)')
+assert c_li.clicked is True and c_txt.clicked is False and c_grp.clicked is False
+
 print('ALL_PASS')
