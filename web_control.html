@@ -272,7 +272,18 @@
 
   function asrStart(e) {
     if (e) e.preventDefault();
-    if (asr) return;
+    // 若上一段正在收尾（松开后 800ms 内），立即终结以便快速开始新一段，
+    // 否则「松手后马上再按」会被下面的守卫挡掉，表现为“按了没反应、再按一次才行”
+    if (asr) {
+      if (asr.stopping) {
+        try { if (asr.ws) asr.ws.close(); } catch (e) {}
+        try { if (asr.stream) asr.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+        try { if (asr.ctx) asr.ctx.close(); } catch (e) {}
+        asr = null;
+      } else {
+        return;  // 正在识别中，忽略重复按下
+      }
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       micStatus("当前是 HTTP 页面，浏览器禁止用麦克风。请改用 https://" +
                 location.hostname + ":" + HTTPS_PORT +
@@ -288,12 +299,28 @@
     asr = { ws: null, ctx: ctx, proc: proc, stream: null,
             committed: "", interim: "", opened: false, stopping: false };
     if (ctx.resume) { try { ctx.resume(); } catch (e) {} }
+    // 立即给视觉反馈，避免“按了没反应”的错觉（正式“识别中”要等麦克风授权成功）
+    micBtn.classList.add("rec");
+    micBtn.textContent = "● 准备中…松开结束";
+    micStatus("正在开启麦克风…");
+    // 麦克风开启兜底：若 8 秒仍未拿到音频流（系统权限/设备占用），提示并收尾
+    var _armTimer = setTimeout(function () {
+      if (asr && asr.ctx === ctx && !asr.stream) {
+        micStatus("麦克风开启超时，请检查系统/浏览器麦克风权限后重试。", true);
+        asrStop(true);
+      }
+    }, 8000);
 
     // 在手势内同步发起麦克风授权（iOS 必须于按下手势内调用，否则 NotAllowedError）
     navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     }).then(function (stream) {
       if (!asr || asr.ctx !== ctx) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      if (asr.stopping) {  // 用户在初始化期间已松手，释放即可
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
+      if (_armTimer) { clearTimeout(_armTimer); }
       asr.stream = stream;
       var src = ctx.createMediaStreamSource(stream);
       proc.onaudioprocess = function (ev) {
@@ -303,7 +330,6 @@
       };
       src.connect(proc);
       proc.connect(ctx.destination);
-      micBtn.classList.add("rec");
       micBtn.textContent = "● 识别中…松开结束";
       micStatus("正在识别，请说话…");
     }).catch(function (err) {
@@ -373,18 +399,21 @@
     if (!asr) return;
     var a = asr;
     a.stopping = true;
+    // 1) 停止采集并释放麦克风（无论当前是否拿到流，都尝试释放，避免设备被占用）
     try { if (a.proc) a.proc.disconnect(); } catch (e) {}
     try { if (a.ctx) a.ctx.close(); } catch (e) {}
     try { if (a.stream) a.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
     micResetBtn();
+    // 2) 通知服务器说完，留 800ms 收最终结果再关闭（结果由 onmessage 持续回填）
     try {
-      if (a.opened && a.ws.readyState === 1) {
+      if (a.opened && a.ws && a.ws.readyState === 1) {
         a.ws.send(JSON.stringify({ is_speaking: false }));
         setTimeout(function () {
-          try { a.ws.close(); } catch (e) {}
+          try { a.ws.close(); } catch (e) {}  // 关闭触发 onclose：把 committed+interim 写入输入框
         }, 800);
       } else {
-        document.getElementById("cmd").value = a.committed + a.interim;
+        // ws 尚未连上（或连接已断）：不会有 onclose 来清理，这里直接收尾并释放引用
+        try { if (a.ws) a.ws.close(); } catch (e) {}
         asr = null;
       }
     } catch (e) { asr = null; }
