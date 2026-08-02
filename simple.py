@@ -193,6 +193,32 @@ def match_simple(text):
         return ("steps", [{"action": "maximize_active", "params": {}}], "最大化当前窗口")
     if "还原" in t or "恢复" in t:
         return ("steps", [{"action": "restore_active", "params": {}}], "还原窗口")
+    # 关闭浏览器标签页（Chrome / Edge）：
+    #   “关闭标签页 / 关闭当前标签页”        -> 关闭当前激活标签
+    #   “关闭第N个标签页”                    -> 跳到第 N 个标签再关闭
+    #   “关闭百度标签页 / 关闭名为XX的标签”  -> 标签搜索定位后关闭
+    # 必须放在“关闭窗口”规则之前，否则“关闭当前标签”会被 close_active 误判为关窗口。
+    # 排除带点击动词的短语（如“点击关闭标签页按钮”），让它们落到下方 click_by_name。
+    # 关键：必须带有“关闭/关”动词才触发，否则“Tab”等按键会被误判为关标签页
+    #       （Tab/Esc 走下方 _match_generic 的通用按键路由）。
+    if ("标签" in t or re.search(r"(?<![a-z])tab(?![a-z])", tl)) and re.search(r"关闭|关掉|关了|关页", t) and not re.search(r"点击|单击|点一下|双击|双点|右键|右击|右点", t):
+        m = re.search(r"关闭\s*(.+?)\s*标签", t)
+        spec = m.group(1).strip() if m else ""
+        spec = re.sub(r"^(名为|名叫|叫)", "", spec)  # “名为XX / 叫XX” 取纯关键词
+        spec = re.sub(r"的$", "", spec)             # 去掉尾随“的”（如“名为github的”）
+        nm = re.search(r"第\s*(\d+)\s*个?", spec)
+        if nm:
+            n = int(nm.group(1))
+            return ("steps", [{"action": "close_tab", "params": {"index": n}}], f"关闭第 {n} 个标签页")
+        # “新标签 / 新标签页 / 新建标签 / 新的标签 / 新开的标签” -> 按标题搜索名为「新标签页」的标签并关闭
+        # （Chrome 新建标签的标题就是「新标签页」，这是按名称关，不是关当前标签）
+        # 对原句 t 做子串判断：可避免把「新闻标签页」误判成新标签（其中不含连续的“新标签”）
+        if any(p in t for p in ("新标签", "新建标签", "新开的标签", "新的标签")):
+            return ("steps", [{"action": "close_tab", "params": {"name": "新标签页"}}], "关闭标签页「新标签页」")
+        if spec and spec not in ("当前", "这个", "此", "的"):
+            return ("steps", [{"action": "close_tab", "params": {"name": spec}}], f"关闭标签页「{spec}」")
+        return ("steps", [{"action": "close_tab", "params": {}}], "关闭当前标签页")
+
     if "关闭" in t and ("窗口" in t or "当前" in t or "这个" in t or "此" in t):
         return ("steps", [{"action": "close_active", "params": {}}], "关闭当前窗口")
     # 切换任务窗口：上一个 / 下一个（等价于 Alt+Shift+Tab / Alt+Tab）

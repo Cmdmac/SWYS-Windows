@@ -1175,6 +1175,109 @@ def _run_command(params):
         return f"命令执行失败：{e}"
 
 
+_BROWSER_CLASSES = {"Chrome_WidgetWin_1", "MozillaWindowClass"}
+
+
+def _browser_class_of(hwnd):
+    """返回窗口类名；Chromium 系(Chrome/Edge/Opera/Brave)为 Chrome_WidgetWin_1，
+    Firefox 为 MozillaWindowClass。用类名而非进程名识别浏览器——
+    因为本运行时 psapi.GetModuleBaseNameW 取不到进程名（恒返回空串）。
+    """
+    try:
+        buf = ctypes.create_unicode_buffer(64)
+        if winctl.user32.GetClassNameW(hwnd, buf, 64):
+            return buf.value or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _close_tab(params):
+    """关闭浏览器（Chrome / Edge）的某个标签页。
+
+    三种目标：
+      - 未指定 name / index        -> 关闭当前激活的标签页（Ctrl+W）
+      - index = N (1..9)           -> 先 Ctrl+N 跳到第 N 个标签，再 Ctrl+W 关闭
+      - name = "关键词"            -> 用 Chrome 标签搜索(Ctrl+Shift+A)定位到该标签，
+                                      激活后 Ctrl+W 关闭
+    无论哪种，都先把浏览器窗口提到前台，避免键发到语音控制台自身。
+    """
+    name = (params.get("name") or "").strip()
+    index = params.get("index")
+
+    # 1) 定位浏览器窗口：优先“当前前台窗口”（用户正在看的那一个），否则取第一个可见浏览器窗口。
+    #    关键：本运行时 process_name_by_pid（psapi GetModuleBaseNameW）对一切进程都返回空串，
+    #    故不能用进程名过滤，改为按【窗口类名】识别——
+    #    Chromium 系(Chrome/Edge/Opera/Brave) 均为 "Chrome_WidgetWin_1"，Firefox 为 "MozillaWindowClass"。
+    hwnd, title = None, ""
+    try:
+        cands = []
+        for h, pid, pname, tt, _rect in winctl.enum_visible_windows(exclude_pid=_SELF_PID):
+            cls = _browser_class_of(h)
+            if cls in _BROWSER_CLASSES:
+                cands.append((h, tt, cls))
+        if cands:
+            fg = winctl.top_visible_window_excluding(_SELF_PID)
+            for h, tt, cls in cands:
+                if h == fg:
+                    hwnd, title = h, tt
+                    break
+            if hwnd is None:
+                hwnd, title = cands[0][0], cands[0][1]
+    except Exception:  # noqa: BLE001
+        pass
+    if hwnd is None:
+        return ("未检测到打开的浏览器窗口（Chrome / Edge / Firefox 等）。\n"
+                "请先打开浏览器并保有一个可见标签，再试「关闭标签页」。")
+
+    # 先把浏览器提到前台（最小化会先还原），再发键
+    try:
+        winctl._activate_hwnd(hwnd)
+    except Exception:  # noqa: BLE001
+        pass
+    time.sleep(0.2)
+
+    def _ctrl_w():
+        try:
+            winctl.hotkey("ctrl", "w")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2) 按名称关闭：标签搜索 -> 输入关键词 -> 回车激活 -> 关闭
+    if name:
+        try:
+            winctl.hotkey("ctrl", "shift", "a")  # Chrome 标签搜索
+            time.sleep(0.3)
+            pyperclip.copy(name)
+            time.sleep(0.12)
+            winctl.hotkey("ctrl", "v")
+            time.sleep(0.45)
+            winctl.press("enter")   # 激活搜索命中的第一个标签
+            time.sleep(0.3)
+        except Exception:  # noqa: BLE001
+            pass
+        _ctrl_w()
+        return f"已关闭标签页：{name}（窗口「{title or '浏览器'}」）"
+
+    # 3) 按序号关闭：Ctrl+N 跳到第 N 个标签，再关闭
+    if index is not None:
+        try:
+            n = int(index)
+        except Exception:  # noqa: BLE001
+            n = 0
+        if 1 <= n <= 8:
+            winctl.hotkey("ctrl", str(n))
+        else:
+            winctl.hotkey("ctrl", "9")  # 9 及以上统一跳到最后一个
+        time.sleep(0.2)
+        _ctrl_w()
+        return f"已关闭第 {n} 个标签页（窗口「{title or '浏览器'}」）"
+
+    # 4) 关闭当前激活标签
+    _ctrl_w()
+    return f"已关闭当前标签页（窗口「{title or '浏览器'}」）"
+
+
 ACTION_HANDLERS = {
     "open_app": _open_app,
     "open_file": _open_file,
@@ -1196,6 +1299,7 @@ ACTION_HANDLERS = {
     "show_desktop": _show_desktop,
     "explorer_nav": _explorer_nav,
     "enter_folder": _enter_folder,
+    "close_tab": _close_tab,
     "switch_window": _switch_window,
     "click_by_name": _click_by_name,
     "double_click": _double_click,
